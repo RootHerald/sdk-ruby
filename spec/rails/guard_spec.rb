@@ -48,7 +48,9 @@ RSpec.describe RootHerald::Guard do
   let(:strict_controller) { StrictSignupsController.new }
 
   def dispatch(controller_class, headers: {})
-    env = Rack::MockRequest.env_for("/signups", method: "POST", headers: headers)
+    # Rack::MockRequest.env_for merges opts directly into the env — it has no
+    # :headers special-casing — so hoist HTTP_* keys to the top level.
+    env = Rack::MockRequest.env_for("/signups", { method: "POST" }.merge(headers))
     request = ActionDispatch::Request.new(env)
     response = ActionDispatch::Response.new
     controller_class.dispatch(:create, request, response)
