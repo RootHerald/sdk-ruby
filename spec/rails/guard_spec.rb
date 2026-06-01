@@ -52,7 +52,11 @@ RSpec.describe RootHerald::Guard do
     request = ActionDispatch::Request.new(env)
     response = ActionDispatch::Response.new
     controller_class.dispatch(:create, request, response)
-    [response.status, JSON.parse(response.body) rescue response.body]
+    # Wrap in parens so the rescue modifier binds tightly to the JSON.parse
+    # call only — without them, Ruby 3.3+ parses the whole array literal as
+    # the rescue clause and fails with a syntax error.
+    body = (JSON.parse(response.body) rescue response.body)
+    [response.status, body]
   end
 
   it "returns 401 when no token is supplied" do
