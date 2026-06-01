@@ -1,67 +1,92 @@
-# Root Herald — Ruby SDK
+# rootherald (Ruby)
 
-Backend SDK for verifying [Root Herald](https://rootherald.io) device attestation JWTs from Ruby applications. Plain Ruby + Rails-friendly.
-
-## Install
-
-```ruby
-# Gemfile
-gem 'rootherald'
-```
+Root Herald server SDK for Ruby 3.1+. Verifies attestation token JWTs
+and CAEP webhook events (SET JWTs) against the Root Herald JWKS.
+Pure Ruby — depends only on `jwt` and `faraday`.
 
 ```bash
-bundle install
+gem install rootherald
 ```
 
-Requires Ruby 3.1 or later.
-
-## 30-second integration
+or in your `Gemfile`:
 
 ```ruby
-require 'rootherald'
+gem "rootherald"
+```
+
+## Usage
+
+```ruby
+require "rootherald"
 
 client = RootHerald::Client.new(
-  issuer: 'https://api.rootherald.io',
-  audience: 'plat_your_client_id',
+  issuer: "https://rootherald.io/myorg",
+  jwks_uri: "https://rootherald.io/.well-known/jwks.json"
 )
+claims = client.verify_token(token)
+proceed_with_signup if claims.verdict == RootHerald::Verdict::ALLOW
+```
 
-verdict = client.verify_token(request.headers['Authorization'])
+`claims` exposes:
 
-unless verdict.device.verdict == 'pass'
-  return render status: :forbidden, json: { error: 'device_check_failed' }
+- `claims.subject` — stable user UUID
+- `claims.acr`, `claims.amr`, `claims.auth_time` — OIDC claims
+- `claims.device_id` — `rootherald_device.ueid`
+- `claims.tpm_class`, `claims.platform`, `claims.attestation_type`
+- `claims.ear_status` and `claims.verdict` (`:allow` / `:warn` / `:deny`)
+- `claims.allow?`, `claims.warn?`, `claims.deny?` — convenience predicates
+- `claims.raw` — the verified payload hash
+
+## Webhook verification
+
+```ruby
+event = client.verify_set(request.body.read)
+
+if event.event_type == "https://schemas.openid.net/secevent/caep/event-type/device-compliance-change"
+  Devices.update(event.device_id, event.event_payload)
 end
-
-render json: { device: verdict.device.device_id }
 ```
 
 ## Rails integration
 
 ```ruby
 # config/initializers/rootherald.rb
-RootHerald.configure do |c|
-  c.issuer = ENV.fetch('ROOTHERALD_ISSUER')
-  c.audience = ENV.fetch('ROOTHERALD_AUDIENCE')
-end
+RootHerald::Guard.client = RootHerald::Client.new(
+  issuer: ENV.fetch("ROOTHERALD_ISSUER")
+)
 
-# app/controllers/application_controller.rb
-class ApplicationController < ActionController::Base
+# app/controllers/signups_controller.rb
+class SignupsController < ApplicationController
   include RootHerald::Guard
+  guard_device :create, action: "signup"
 
-  before_action :guard_device, only: [:create, :update]
+  def create
+    # rootherald_claims is available here
+  end
 end
 ```
 
-## What you get
+Pass `deny_on_warn: true` to `guard_device` to reject WARN verdicts.
 
-- `RootHerald::Client` — JWKS-cached token verifier
-- `RootHerald::Guard` mixin for controllers
-- Strongly-typed `Verdict` + `DeviceVerdict` value objects
-- `WebhookVerifier` for CAEP webhook signature checks
+## Errors
 
-## Trust chain
+All errors inherit from `RootHerald::Error`:
 
-The SDK fetches Root Herald's signing keys from `{issuer}/.well-known/jwks.json` and caches them in memory. Token signature verification happens locally after the first JWKS fetch.
+- `TokenExpiredError` — `exp` claim is in the past
+- `VerificationError` — signature / issuer / audience / schema failure
+- `WebhookSignatureError` — SET JWT failed verification
+- `JwksError` — JWKS could not be fetched / parsed
+- `HttpError` — Root Herald REST API returned non-2xx
 
-## License
+## Tests
 
-MIT. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+```bash
+bundle install
+bundle exec rspec
+```
+
+## Build the gem
+
+```bash
+gem build rootherald.gemspec
+```
