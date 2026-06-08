@@ -43,7 +43,6 @@ module RootHerald
       freeze
     end
 
-    # Convenience: +true+ when the friendly verdict is +:allow+.
     def allow?
       verdict == Verdict::ALLOW
     end
