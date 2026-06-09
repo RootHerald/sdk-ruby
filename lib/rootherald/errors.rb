@@ -4,9 +4,7 @@ module RootHerald
   # Base class for all Root Herald SDK errors.
   class Error < StandardError
     # Stable string code for log correlation across SDKs.
-    def code
-      "rootherald_error"
-    end
+    def code = "rootherald_error"
   end
 
   # Attestation token failed verification (signature / claims / schema).
