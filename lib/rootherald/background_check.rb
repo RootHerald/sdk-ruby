@@ -15,7 +15,7 @@ module RootHerald
   # / RootHerald::Guard) is unchanged; the optional token returned by
   # +attest(..., return_token: true)+ is itself verifiable with it.
   class BackgroundCheck
-    DEFAULT_BASE_URL = "https://api.rootherald.com"
+    DEFAULT_BASE_URL = "https://api.rootherald.io"
     SECRET_KEY_PREFIX = "rh_sk_"
 
     # A relay-friendly nonce minted by #create_challenge.
@@ -23,7 +23,58 @@ module RootHerald
 
     # The result of #attest: the device verdict, the full verdict data, and an
     # optional signed EAT (JWT) when +return_token: true+ was requested.
-    AttestResult = Struct.new(:verdict, :verdict_data, :token, keyword_init: true)
+    #
+    # The cohort accessors expose the ADDITIVE, advisory-only cohort fields the
+    # server populates on +verdict_data["device"]+ (camelCase keys) when a
+    # quote-bound event log was supplied — never a trust gate. They return nil
+    # (or {} for the per-PCR map) when the server omitted them.
+    AttestResult = Struct.new(:verdict, :verdict_data, :token, keyword_init: true) do
+      # @return [Hash] the raw +device+ sub-object, passed through verbatim
+      def device
+        d = verdict_data.is_a?(Hash) ? verdict_data["device"] : nil
+        d.is_a?(Hash) ? d : {}
+      end
+
+      # @return [String, nil] opaque cohort key
+      def cohort_key
+        v = device["cohortKey"]
+        v.is_a?(String) ? v : nil
+      end
+
+      # @return [String, nil] cohort scope ("global" | "tenant-fleet")
+      def cohort_scope
+        v = device["cohortScope"]
+        v.is_a?(String) ? v : nil
+      end
+
+      # @return [Float, nil] fraction of the cohort sharing this profile
+      def cohort_prevalence
+        v = device["cohortPrevalence"]
+        v.is_a?(Numeric) ? v.to_f : nil
+      end
+
+      # @return [Hash{String=>Float}] per-PCR prevalence map; {} if absent
+      def cohort_prevalence_per_pcr
+        v = device["cohortPrevalencePerPcr"]
+        return {} unless v.is_a?(Hash)
+
+        v.each_with_object({}) do |(pcr, frac), acc|
+          acc[pcr.to_s] = frac.to_f if frac.is_a?(Numeric)
+        end
+      end
+
+      # @return [Integer, nil] number of devices in the cohort sample
+      def cohort_sample_size
+        v = device["cohortSampleSize"]
+        v.is_a?(Integer) ? v : nil
+      end
+
+      # @return [Boolean, nil] whether this is a previously-unseen profile
+      def novel_profile
+        v = device["novelProfile"]
+        [true, false].include?(v) ? v : nil
+      end
+    end
 
     # @param secret_key [String] your Root Herald secret key (rh_sk_…); required
     # @param base_url [String]
