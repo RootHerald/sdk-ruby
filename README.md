@@ -1,7 +1,14 @@
 # rootherald (Ruby)
 
-Root Herald server SDK for Ruby 3.1+. Verifies attestation token JWTs
-and CAEP webhook events (SET JWTs) against the Root Herald JWKS.
+Root Herald server SDK for Ruby 3.1+. Two paths:
+
+- **Background-Check (server → server)** — `RootHerald::BackgroundCheck`: your
+  dumb client collects an opaque evidence blob and hands it to *your* server,
+  which appraises it with Root Herald using your `rh_sk_` secret key. The client
+  never holds a key or talks to Root Herald.
+- **Badge tier (offline verify)** — `RootHerald::Client#verify_token` + the Rails
+  guard: verify a Root Herald-issued EAT (JWT) and CAEP webhook events against
+  the JWKS.
 
 ```ruby
 # Gemfile
@@ -12,7 +19,33 @@ gem "rootherald"
 gem install rootherald
 ```
 
-## Verify a token
+## Background-Check (server → server)
+
+```ruby
+require "rootherald"
+
+# Construct with your SECRET key (rh_sk_…). A publishable key (rh_pk_…) is
+# rejected — it must never be used server-side.
+rh = RootHerald::BackgroundCheck.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
+
+# 1) Mint a relay-friendly nonce; send challenge.nonce down to the client.
+challenge = rh.create_challenge
+
+# 2) The client quotes over the nonce and returns an opaque evidence blob;
+#    submit it for appraisal.
+result = rh.attest(evidence, challenge_id: challenge.challenge_id,
+                   policy: "rootherald:builtin:strict-hardware", # optional
+                   return_token: true)                           # optional EAT
+
+proceed_with_signup if result.verdict == :allow
+```
+
+An un-enrolled / failing device is a verdict (`:deny`/`:warn`), **not** an
+error. Only protocol/auth/quota problems raise — `InvalidSecretKeyError` (401),
+`UnknownPolicyError` (422), `ChallengeError` (409), `InvalidEvidenceError`
+(400), `QuotaExceededError` (429).
+
+## Verify a token (badge tier)
 
 ```ruby
 require "rootherald"

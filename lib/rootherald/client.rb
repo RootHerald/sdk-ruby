@@ -55,14 +55,6 @@ module RootHerald
       request(:get, "/api/v1/devices/#{device_id}")
     end
 
-    # POST /api/v1/attestations/verify
-    # @return [Hash]
-    def verify_attestation(evidence, action: nil)
-      body = { "evidence" => evidence }
-      body["action"] = action if action
-      request(:post, "/api/v1/attestations/verify", body: body)
-    end
-
     private
 
     def request(method, path, body: nil)

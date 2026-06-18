@@ -18,5 +18,19 @@ module RootHerald
       else WARN
       end
     end
+
+    # Map the flat "verdict" field the verify endpoint emits
+    # ("pass"/"fail"/"warn") to the SDK symbol. Unknown/missing values map to
+    # +:warn+ (fail-closed: never silently +:allow+).
+    #
+    # @param raw [String, nil]
+    # @return [Symbol] one of +:allow+, +:warn+, +:deny+
+    def self.from_raw(raw)
+      case raw.to_s.strip.downcase
+      when "pass", "allow", "affirming" then ALLOW
+      when "fail", "deny", "contraindicated" then DENY
+      else WARN
+      end
+    end
   end
 end
