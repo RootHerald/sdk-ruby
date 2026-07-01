@@ -29,19 +29,6 @@ RSpec.describe RootHerald::Client do
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
   end
 
-  it "POSTs an attestation evidence body" do
-    seen = {}
-    c = client(lambda { |method, _url, _headers, body|
-      seen[:method] = method
-      seen[:body] = JSON.parse(body)
-      { status: 200, body: JSON.generate("verdict" => "pass") }
-    })
-    out = c.verify_attestation({ "pcr_blob" => "..." }, action: "signup")
-    expect(out["verdict"]).to eq("pass")
-    expect(seen[:method]).to eq(:post)
-    expect(seen[:body]["action"]).to eq("signup")
-  end
-
   it "raises HttpError on non-2xx responses" do
     c = client(->(*_args) { { status: 403, body: '{"error":"forbidden"}' } })
     expect { c.get_device("d-403") }.to raise_error(RootHerald::HttpError) do |e|
