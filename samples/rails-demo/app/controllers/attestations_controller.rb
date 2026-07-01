@@ -10,10 +10,10 @@ class AttestationsController < ApplicationController
   def create
     # 1) mint a nonce; in production, hand challenge.nonce to the client first,
     #    then receive the evidence it produced. Compressed here.
-    challenge = RH.create_challenge
+    challenge = RH.issue_challenge
 
     # 2) appraise the opaque evidence the client posted.
-    result = RH.attest(params.require(:evidence).to_unsafe_h,
+    result = RH.verify(params.require(:evidence).to_unsafe_h,
                        challenge_id: challenge.challenge_id)
 
     if result.verdict == :allow

@@ -23,10 +23,20 @@ require_relative "rootherald/background_check"
 #
 # Pure Ruby — depends on +jwt+ and +faraday+.
 #
-#   # Background-Check
+#   # Background-Check (relay the keyless client's opaque blobs with rh_sk_)
 #   rh = RootHerald::BackgroundCheck.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
-#   challenge = rh.create_challenge
-#   result = rh.attest(evidence, challenge_id: challenge.challenge_id)
+#
+#   # One-time device enroll (relay the client's EnrollBegin/EnrollComplete blobs)
+#   enroll = rh.relay_enroll(enroll_request_blob)
+#   unless enroll.already_enrolled?
+#     # hand enroll.challenge to the client's EnrollComplete, then:
+#     rh.relay_activate(activation_response)
+#   end
+#   device_id = enroll.device_id
+#
+#   # Per-attestation appraisal
+#   challenge = rh.issue_challenge
+#   result = rh.verify(evidence, challenge_id: challenge.challenge_id)
 #   proceed_with_signup if result.verdict == :allow
 #
 #   # Badge tier
