@@ -2,11 +2,11 @@
 
 Root Herald server SDK for Ruby 3.1+. Two paths:
 
-- **Background-Check (server → server)** — `RootHerald::BackgroundCheck`: your
+- **Background-Check (server → server)** via `RootHerald::BackgroundCheck`: your
   dumb client collects an opaque evidence blob and hands it to *your* server,
   which appraises it with Root Herald using your `rh_sk_` secret key. The client
   never holds a key or talks to Root Herald.
-- **Badge tier (offline verify)** — `RootHerald::Client#verify_token` + the Rails
+- **Badge tier (offline verify)** via `RootHerald::Client#verify_token` + the Rails
   guard: verify a Root Herald-issued EAT (JWT) and CAEP webhook events against
   the JWKS.
 
@@ -46,7 +46,7 @@ proceed_with_signup if result.verdict == :allow
 ### One-time device enroll (relay)
 
 The keyless client produces opaque enroll blobs; your backend relays them with
-the `rh_sk_` secret. The enroll endpoint is asymmetric — a fresh device returns
+the `rh_sk_` secret. The enroll endpoint is asymmetric: a fresh device returns
 a MakeCredential challenge (`201`); an already-bound device short-circuits
 (`409`), in which case you **skip** the activate leg.
 
@@ -65,7 +65,7 @@ end
 ```
 
 An un-enrolled / failing device is a verdict (`:deny`/`:warn`), **not** an
-error. Only protocol/auth/quota problems raise — `InvalidSecretKeyError` (401),
+error. Only protocol/auth/quota problems raise: `InvalidSecretKeyError` (401),
 `UnknownPolicyError` (422), `ChallengeError` (409), `InvalidEvidenceError`
 (400), `QuotaExceededError` (429).
 
