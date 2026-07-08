@@ -16,10 +16,6 @@ module RootHerald
   #
   # The verdict is computed by Root Herald and returned to the backend — it never
   # travels through the keyless client.
-  #
-  # This is ADDITIVE. The offline/badge-tier path (RootHerald::Client#verify_token
-  # / RootHerald::Guard) is unchanged; the optional token returned by
-  # +verify(..., return_token: true)+ is itself verifiable with it.
   class BackgroundCheck
     DEFAULT_BASE_URL = "https://api.rootherald.io"
     SECRET_KEY_PREFIX = "rh_sk_"
@@ -55,14 +51,13 @@ module RootHerald
     # backend maps to its user.
     ActivateResult = Struct.new(:device_id, :status, :enrolled_at, keyword_init: true)
 
-    # The result of #attest: the device verdict, the full verdict data, and an
-    # optional signed EAT (JWT) when +return_token: true+ was requested.
+    # The result of #verify: the device verdict and the full verdict data.
     #
     # The cohort accessors expose the ADDITIVE, advisory-only cohort fields the
     # server populates on +verdict_data["device"]+ (camelCase keys) when a
     # quote-bound event log was supplied — never a trust gate. They return nil
     # (or {} for the per-PCR map) when the server omitted them.
-    AttestResult = Struct.new(:verdict, :verdict_data, :token, keyword_init: true) do
+    AttestResult = Struct.new(:verdict, :verdict_data, keyword_init: true) do
       # @return [Hash] the raw +device+ sub-object, passed through verbatim
       def device
         d = verdict_data.is_a?(Hash) ? verdict_data["device"] : nil
@@ -121,7 +116,7 @@ module RootHerald
       raise ArgumentError, "a secret key (rh_sk_…) is required" if secret_key.nil? || secret_key.empty?
       unless secret_key.start_with?(SECRET_KEY_PREFIX)
         raise ArgumentError,
-              "secret_key must be a secret key (rh_sk_…); a publishable key (rh_pk_…) must never be used server-side"
+              "RootHerald secret key must start with rh_sk_"
       end
 
       @secret_key = secret_key
@@ -249,8 +244,7 @@ module RootHerald
     end
 
     # POST /api/v1/attestations/verify — submit the opaque evidence blob for
-    # server-side appraisal and return the verdict (plus an optional signed EAT
-    # when +return_token: true+).
+    # server-side appraisal and return the verdict.
     #
     # An un-enrolled / failing device is NOT an error — it returns a normal
     # AttestResult carrying +:deny+/+:warn+. Only protocol/auth/quota problems
@@ -262,14 +256,12 @@ module RootHerald
     # @param evidence [Hash, Array, String] opaque blob from the client collector; passed through verbatim
     # @param challenge_id [String] the single-use id from #issue_challenge
     # @param policy [String, nil] tenant policy id/name or a "rootherald:builtin:*" name; unknown names fail closed (422)
-    # @param return_token [Boolean] opt-in signed EAT (JWT) output
     # @return [AttestResult]
-    def verify(evidence, challenge_id:, policy: nil, return_token: false)
+    def verify(evidence, challenge_id:, policy: nil)
       raise ChallengeError.new(409, "", "verify requires challenge_id (from issue_challenge)") if challenge_id.to_s.empty?
 
       body = { "challengeId" => challenge_id, "evidence" => evidence }
       body["policy"] = policy unless policy.nil?
-      body["returnToken"] = true if return_token
 
       data = post("/api/v1/attestations/verify", body)
       verdict_data = data["verdict"]
@@ -277,8 +269,7 @@ module RootHerald
 
       AttestResult.new(
         verdict: Verdict.from_raw(verdict_data["verdict"]),
-        verdict_data: verdict_data,
-        token: data["token"].is_a?(String) ? data["token"] : nil
+        verdict_data: verdict_data
       )
     end
 
@@ -290,8 +281,8 @@ module RootHerald
 
     # @deprecated Renamed to #verify for the Client ABI 2.0 backend contract.
     #   Retained as a thin alias for backwards compatibility.
-    def attest(evidence, challenge_id:, policy: nil, return_token: false)
-      verify(evidence, challenge_id: challenge_id, policy: policy, return_token: return_token)
+    def attest(evidence, challenge_id:, policy: nil)
+      verify(evidence, challenge_id: challenge_id, policy: policy)
     end
 
     private

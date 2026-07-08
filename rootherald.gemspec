@@ -9,8 +9,8 @@ Gem::Specification.new do |spec|
   spec.email = ["hello@rootherald.io"]
 
   spec.summary = "Root Herald server SDK for Ruby."
-  spec.description = "Verifies Root Herald attestation tokens (JWTs) and CAEP " \
-    "webhook Security Event Tokens (SET JWTs)."
+  spec.description = "Server-to-server Background-Check client for Root Herald " \
+    "device attestation."
   spec.homepage = "https://rootherald.io"
   spec.license = "Apache-2.0"
   spec.required_ruby_version = ">= 3.1.0"
@@ -29,5 +29,4 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "faraday", "~> 2.7"
-  spec.add_dependency "jwt", "~> 2.7"
 end

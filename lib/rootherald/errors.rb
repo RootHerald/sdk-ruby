@@ -7,26 +7,6 @@ module RootHerald
     def code = "rootherald_error"
   end
 
-  # Attestation token failed verification (signature / claims / schema).
-  class VerificationError < Error
-    def code = "verification_failed"
-  end
-
-  # The token's +exp+ claim is in the past.
-  class TokenExpiredError < VerificationError
-    def code = "token_expired"
-  end
-
-  # CAEP webhook (SET JWT) failed verification.
-  class WebhookSignatureError < Error
-    def code = "webhook_signature_invalid"
-  end
-
-  # JWKS could not be fetched or parsed.
-  class JwksError < Error
-    def code = "jwks_error"
-  end
-
   # The Root Herald REST API returned a non-2xx response.
   class HttpError < Error
     attr_reader :status, :body

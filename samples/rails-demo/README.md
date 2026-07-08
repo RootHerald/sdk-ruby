@@ -9,38 +9,29 @@ bundle add rootherald
 ```
 
 Copy `config/initializers/rootherald.rb` into your Rails app. Set the
-required environment variables (`ROOTHERALD_ISSUER`, optionally
-`ROOTHERALD_API_KEY`).
+`ROOTHERALD_SECRET_KEY` (rh_sk_…) environment variable — it stays on your
+server only.
 
-## Controller usage
+## Controller usage (Background-Check, server → server)
+
+The dumb client POSTs its opaque evidence blob to your server; your server
+appraises it with Root Herald using the `rh_sk_` secret key.
 
 ```ruby
-class SignupsController < ApplicationController
-  include RootHerald::Guard
-  guard_device :create, action: "signup"
+class AttestationsController < ApplicationController
+  RH = RootHerald::BackgroundCheck.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 
   def create
-    user = User.create!(device_id: rootherald_claims.device_id)
-    render json: { id: user.id }
-  end
-end
-```
+    challenge = RH.issue_challenge
+    result = RH.verify(params.require(:evidence).to_unsafe_h,
+                       challenge_id: challenge.challenge_id)
 
-Pass `deny_on_warn: true` to `guard_device` to reject WARN verdicts in
-addition to DENY.
-
-## Webhook receiver
-
-```ruby
-class CaepWebhooksController < ApplicationController
-  skip_before_action :verify_authenticity_token  # SET JWT is its own auth
-
-  def receive
-    event = RootHerald::Guard.client.verify_set(request.body.read)
-    DeviceComplianceJob.perform_later(event.device_id, event.event_payload)
-    head :accepted
-  rescue RootHerald::WebhookSignatureError
-    head :bad_request
+    if result.verdict == :allow
+      render json: { ok: true, verdict: result.verdict }
+    else
+      # An un-enrolled / failing device is a verdict, not an error.
+      render json: { ok: false, verdict: result.verdict }, status: :forbidden
+    end
   end
 end
 ```
