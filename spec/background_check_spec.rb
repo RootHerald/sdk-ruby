@@ -11,8 +11,8 @@ RSpec.describe RootHerald::BackgroundCheck do
     )
   end
 
-  it "rejects a publishable key" do
-    expect { RootHerald::BackgroundCheck.new(secret_key: "rh_pk_live_abc") }
+  it "rejects a key without the rh_sk_ prefix" do
+    expect { RootHerald::BackgroundCheck.new(secret_key: "rh_bogus_abc") }
       .to raise_error(ArgumentError)
   end
 
@@ -39,18 +39,16 @@ RSpec.describe RootHerald::BackgroundCheck do
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
   end
 
-  it "attests and maps a pass verdict, surfacing the token" do
+  it "attests and maps a pass verdict" do
     seen = {}
     c = bg(lambda { |_method, _url, _headers, body|
       seen[:body] = JSON.parse(body)
       { status: 200, body: JSON.generate(
-        "verdict" => { "verdict" => "pass", "ueid" => "dev-9" },
-        "token" => "eyJ.signed.eat"
+        "verdict" => { "verdict" => "pass", "ueid" => "dev-9" }
       ) }
     })
-    result = c.attest({ "quote" => "..." }, challenge_id: "ch_1", return_token: true)
+    result = c.attest({ "quote" => "..." }, challenge_id: "ch_1")
     expect(result.verdict).to eq(:allow)
-    expect(result.token).to eq("eyJ.signed.eat")
     expect(seen[:body]["challengeId"]).to eq("ch_1")
     expect(seen[:body]["evidence"]["quote"]).to eq("...")
   end
@@ -94,7 +92,6 @@ RSpec.describe RootHerald::BackgroundCheck do
     c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "verdict" => "fail" }) } })
     result = c.attest({}, challenge_id: "ch_1")
     expect(result.verdict).to eq(:deny)
-    expect(result.token).to be_nil
   end
 
   {
@@ -134,16 +131,14 @@ RSpec.describe RootHerald::BackgroundCheck do
     c = bg(lambda { |_method, url, _headers, body|
       seen[:url] = url
       seen[:body] = JSON.parse(body)
-      { status: 200, body: JSON.generate("verdict" => { "verdict" => "pass" }, "token" => "eyJ.x.y") }
+      { status: 200, body: JSON.generate("verdict" => { "verdict" => "pass" }) }
     })
-    result = c.verify({ "quote" => "..." }, challenge_id: "ch_1", policy: "default", return_token: true)
+    result = c.verify({ "quote" => "..." }, challenge_id: "ch_1", policy: "default")
     expect(result.verdict).to eq(:allow)
-    expect(result.token).to eq("eyJ.x.y")
     expect(seen[:url]).to end_with("/api/v1/attestations/verify")
     expect(seen[:body]["challengeId"]).to eq("ch_1")
     expect(seen[:body]["evidence"]["quote"]).to eq("...")
     expect(seen[:body]["policy"]).to eq("default")
-    expect(seen[:body]["returnToken"]).to eq(true)
   end
 
   it "verify requires a challenge_id" do
