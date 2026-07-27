@@ -31,9 +31,13 @@ challenge = rh.issue_challenge
 # 2) The client quotes over the nonce and returns an opaque evidence blob;
 #    submit it for appraisal.
 result = rh.verify(evidence, challenge_id: challenge.challenge_id,
-                   policy: "rootherald:builtin:strict-hardware") # optional
+                   policy: "rootherald:builtin:strict-hardware",   # optional
+                   requested_disclosure_class: "pseudonymous")     # optional ceiling
 
 proceed_with_signup if result.verdict == :allow
+
+result.assurance_claims_met  # => ["urn:rootherald:assurance:…"] satisfied assurance URNs
+result.enrollment_required   # => true when the device must enroll first (attest-first)
 ```
 
 > `issue_challenge`/`verify` are the ABI 2.0 names; the previous

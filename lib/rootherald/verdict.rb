@@ -19,9 +19,10 @@ module RootHerald
       end
     end
 
-    # Map the flat "verdict" field the verify endpoint emits
-    # ("pass"/"fail"/"warn") to the SDK symbol. Unknown/missing values map to
-    # +:warn+ (fail-closed: never silently +:allow+).
+    # Map the device verdict token the verify endpoint emits at
+    # +verdict.device.verdict+ ("pass"/"fail"/"warn") to the SDK symbol.
+    # Unknown/missing values map to +:warn+ (fail-closed: never silently
+    # +:allow+).
     #
     # @param raw [String, nil]
     # @return [Symbol] one of +:allow+, +:warn+, +:deny+

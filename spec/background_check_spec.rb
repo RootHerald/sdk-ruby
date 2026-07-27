@@ -39,16 +39,20 @@ RSpec.describe RootHerald::BackgroundCheck do
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
   end
 
-  it "attests and maps a pass verdict" do
+  it "attests and maps a pass verdict, surfacing the parity fields" do
     seen = {}
     c = bg(lambda { |_method, _url, _headers, body|
       seen[:body] = JSON.parse(body)
       { status: 200, body: JSON.generate(
-        "verdict" => { "verdict" => "pass", "ueid" => "dev-9" }
+        "verdict" => { "device" => { "verdict" => "pass", "ueid" => "dev-9", "earStatus" => "affirming" } },
+        "assuranceClaimsMet" => ["urn:rootherald:assurance:hardware-backed"],
+        "enrollmentRequired" => false
       ) }
     })
     result = c.attest({ "quote" => "..." }, challenge_id: "ch_1")
     expect(result.verdict).to eq(:allow)
+    expect(result.assurance_claims_met).to eq(["urn:rootherald:assurance:hardware-backed"])
+    expect(result.enrollment_required).to be(false)
     expect(seen[:body]["challengeId"]).to eq("ch_1")
     expect(seen[:body]["evidence"]["quote"]).to eq("...")
   end
@@ -57,9 +61,9 @@ RSpec.describe RootHerald::BackgroundCheck do
     c = bg(->(*_args) {
       { status: 200, body: JSON.generate(
         "verdict" => {
-          "verdict" => "pass",
-          "ueid" => "dev-9",
           "device" => {
+            "verdict" => "pass",
+            "ueid" => "dev-9",
             "cohortKey" => "tpm20:win11:sb1:abc123",
             "cohortScope" => "tenant-fleet",
             "cohortPrevalence" => 0.042,
@@ -80,7 +84,7 @@ RSpec.describe RootHerald::BackgroundCheck do
   end
 
   it "leaves cohort accessors nil when the server omits them" do
-    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "verdict" => "pass" }) } })
+    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }) } })
     result = c.attest({}, challenge_id: "ch_1")
     expect(result.cohort_key).to be_nil
     expect(result.cohort_prevalence).to be_nil
@@ -89,7 +93,7 @@ RSpec.describe RootHerald::BackgroundCheck do
   end
 
   it "treats a fail verdict as a verdict, not an error" do
-    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "verdict" => "fail" }) } })
+    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "fail" } }) } })
     result = c.attest({}, challenge_id: "ch_1")
     expect(result.verdict).to eq(:deny)
   end
@@ -131,7 +135,11 @@ RSpec.describe RootHerald::BackgroundCheck do
     c = bg(lambda { |_method, url, _headers, body|
       seen[:url] = url
       seen[:body] = JSON.parse(body)
-      { status: 200, body: JSON.generate("verdict" => { "verdict" => "pass" }) }
+      { status: 200, body: JSON.generate(
+        "verdict" => { "device" => { "verdict" => "pass" } },
+        "assuranceClaimsMet" => [],
+        "enrollmentRequired" => false
+      ) }
     })
     result = c.verify({ "quote" => "..." }, challenge_id: "ch_1", policy: "default")
     expect(result.verdict).to eq(:allow)
@@ -139,6 +147,31 @@ RSpec.describe RootHerald::BackgroundCheck do
     expect(seen[:body]["challengeId"]).to eq("ch_1")
     expect(seen[:body]["evidence"]["quote"]).to eq("...")
     expect(seen[:body]["policy"]).to eq("default")
+    # requestedDisclosureClass is omitted when not supplied
+    expect(seen[:body]).not_to have_key("requestedDisclosureClass")
+  end
+
+  it "verify sends requestedDisclosureClass when supplied" do
+    seen = {}
+    c = bg(lambda { |_method, _url, _headers, body|
+      seen[:body] = JSON.parse(body)
+      { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }) }
+    })
+    c.verify({}, challenge_id: "ch_1", requested_disclosure_class: "pseudonymous")
+    expect(seen[:body]["requestedDisclosureClass"]).to eq("pseudonymous")
+  end
+
+  it "verify signals enrollment_required on an enroll-on-miss response" do
+    c = bg(->(*_args) {
+      { status: 200, body: JSON.generate(
+        "verdict" => { "device" => { "verdict" => "fail" } },
+        "assuranceClaimsMet" => [],
+        "enrollmentRequired" => true
+      ) }
+    })
+    result = c.verify({}, challenge_id: "ch_1")
+    expect(result.verdict).to eq(:deny)
+    expect(result.enrollment_required).to be(true)
   end
 
   it "verify requires a challenge_id" do
@@ -147,7 +180,7 @@ RSpec.describe RootHerald::BackgroundCheck do
   end
 
   it "keeps create_challenge / attest as working deprecated aliases" do
-    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "verdict" => "pass" }) } })
+    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }) } })
     expect(c.attest({}, challenge_id: "ch_1").verdict).to eq(:allow)
     c2 = bg(->(*_args) {
       { status: 200, body: JSON.generate("challengeId" => "c", "nonce" => "n", "expiresAt" => "2030-01-01T00:00:00Z") }

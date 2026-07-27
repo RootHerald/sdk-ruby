@@ -17,7 +17,7 @@ module RootHerald
   # The verdict is computed by Root Herald and returned to the backend — it never
   # travels through the keyless client.
   class BackgroundCheck
-    DEFAULT_BASE_URL = "https://api.rootherald.io"
+    DEFAULT_BASE_URL = "https://rootherald.io"
     SECRET_KEY_PREFIX = "rh_sk_"
 
     # A relay-friendly nonce minted by #issue_challenge.
@@ -53,11 +53,16 @@ module RootHerald
 
     # The result of #verify: the device verdict and the full verdict data.
     #
+    # +assurance_claims_met+ / +enrollment_required+ mirror @rootherald/node:
+    # the top-level +assuranceClaimsMet+ (satisfied assurance URNs) and
+    # +enrollment_required+ (the attest-first / enroll-on-miss signal).
+    #
     # The cohort accessors expose the ADDITIVE, advisory-only cohort fields the
     # server populates on +verdict_data["device"]+ (camelCase keys) when a
     # quote-bound event log was supplied — never a trust gate. They return nil
     # (or {} for the per-PCR map) when the server omitted them.
-    AttestResult = Struct.new(:verdict, :verdict_data, keyword_init: true) do
+    AttestResult = Struct.new(:verdict, :verdict_data, :assurance_claims_met, :enrollment_required,
+                              keyword_init: true) do
       # @return [Hash] the raw +device+ sub-object, passed through verbatim
       def device
         d = verdict_data.is_a?(Hash) ? verdict_data["device"] : nil
@@ -256,20 +261,27 @@ module RootHerald
     # @param evidence [Hash, Array, String] opaque blob from the client collector; passed through verbatim
     # @param challenge_id [String] the single-use id from #issue_challenge
     # @param policy [String, nil] tenant policy id/name or a "rootherald:builtin:*" name; unknown names fail closed (422)
+    # @param requested_disclosure_class [String, nil] optional disclosure ceiling
+    #        ("verdict" | "pseudonymous" | "derived" | "full"); omitted from the
+    #        request body when nil
     # @return [AttestResult]
-    def verify(evidence, challenge_id:, policy: nil)
+    def verify(evidence, challenge_id:, policy: nil, requested_disclosure_class: nil)
       raise ChallengeError.new(409, "", "verify requires challenge_id (from issue_challenge)") if challenge_id.to_s.empty?
 
       body = { "challengeId" => challenge_id, "evidence" => evidence }
       body["policy"] = policy unless policy.nil?
+      body["requestedDisclosureClass"] = requested_disclosure_class unless requested_disclosure_class.nil?
 
       data = post("/api/v1/attestations/verify", body)
       verdict_data = data["verdict"]
       raise HttpError.new(200, data.to_json, "verify response missing verdict") unless verdict_data.is_a?(Hash)
 
+      device = verdict_data["device"].is_a?(Hash) ? verdict_data["device"] : {}
       AttestResult.new(
-        verdict: Verdict.from_raw(verdict_data["verdict"]),
-        verdict_data: verdict_data
+        verdict: Verdict.from_raw(device["verdict"]),
+        verdict_data: verdict_data,
+        assurance_claims_met: data["assuranceClaimsMet"].is_a?(Array) ? data["assuranceClaimsMet"] : [],
+        enrollment_required: data["enrollmentRequired"] == true
       )
     end
 
