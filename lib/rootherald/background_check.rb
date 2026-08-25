@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
+require "ipaddr"
 require "json"
+require "uri"
 
 module RootHerald
   # Server -> server Background-Check client.
@@ -115,7 +117,8 @@ module RootHerald
     # @param timeout_seconds [Float]
     # @param http_transport [#call, nil] callable taking
     #        +(method, url, headers, body)+ and returning +{status:, body:}+
-    # @raise [ArgumentError] if the key is empty or not an rh_sk_ key
+    # @raise [ArgumentError] if the key is empty, is not an rh_sk_ key, or the
+    #   base URL is not https (loopback excepted)
     def initialize(secret_key:, base_url: DEFAULT_BASE_URL,
                    timeout_seconds: 10.0, http_transport: nil)
       raise ArgumentError, "a secret key (rh_sk_…) is required" if secret_key.nil? || secret_key.empty?
@@ -125,9 +128,51 @@ module RootHerald
       end
 
       @secret_key = secret_key
-      @base_url = base_url.to_s.chomp("/")
+      @base_url = self.class.require_secure_base_url(base_url)
       @timeout = timeout_seconds
       @http_transport = http_transport || build_default_transport
+    end
+
+    # Reject a base URL that would put the +rh_sk_+ secret on the wire in the
+    # clear.
+    #
+    # The secret rides in an Authorization header on every request and is
+    # full-privilege, so an +http://+ or scheme-less base URL hands it to anyone
+    # on the path. A typo is enough, and nothing downstream notices, because the
+    # request itself still succeeds.
+    #
+    # Loopback is excepted so the local docker stack keeps working over http.
+    #
+    # @param base_url [String]
+    # @return [String] the normalised base URL
+    # @raise [ArgumentError] when the URL is not absolute https or loopback
+    def self.require_secure_base_url(base_url)
+      raw = base_url.to_s.chomp("/")
+      uri = begin
+        URI.parse(raw)
+      rescue URI::InvalidURIError
+        nil
+      end
+
+      if uri.nil? || uri.host.nil? || uri.scheme.nil?
+        raise ArgumentError, "base_url must be an absolute https URL (got #{raw.inspect})"
+      end
+      return raw if uri.scheme == "https"
+      return raw if loopback_host?(uri.host)
+
+      raise ArgumentError, "base_url must use https (got #{raw.inspect})"
+    end
+
+    # @api private
+    def self.loopback_host?(host)
+      stripped = host.delete_prefix("[").delete_suffix("]")
+      return true if stripped == "localhost"
+
+      begin
+        IPAddr.new(stripped).loopback?
+      rescue IPAddr::InvalidAddressError
+        false
+      end
     end
 
     # Enroll relay — leg 1. POST /api/v1/devices/enroll.

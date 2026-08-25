@@ -16,6 +16,36 @@ RSpec.describe RootHerald::BackgroundCheck do
       .to raise_error(ArgumentError)
   end
 
+  # The secret rides in an Authorization header on every request and is
+  # full-privilege, so a base URL that is not https hands it to anyone on the
+  # path. A typo is enough, and nothing downstream notices because the request
+  # still succeeds.
+  [
+    "http://api.example.test",
+    "http://rootherald.io",
+    "api.example.test",
+    "//api.example.test",
+    ""
+  ].each do |bad|
+    it "rejects the insecure base_url #{bad.inspect}" do
+      expect { RootHerald::BackgroundCheck.new(secret_key: "rh_sk_test_xxx", base_url: bad) }
+        .to raise_error(ArgumentError, /https/)
+    end
+  end
+
+  # Loopback stays usable so the local docker stack works over http.
+  [
+    "https://api.example.test",
+    "http://localhost:8080",
+    "http://127.0.0.1:5000",
+    "http://[::1]:5000"
+  ].each do |good|
+    it "accepts the base_url #{good.inspect}" do
+      expect { RootHerald::BackgroundCheck.new(secret_key: "rh_sk_test_xxx", base_url: good) }
+        .not_to raise_error
+    end
+  end
+
   it "rejects an empty key" do
     expect { RootHerald::BackgroundCheck.new(secret_key: "") }
       .to raise_error(ArgumentError)
