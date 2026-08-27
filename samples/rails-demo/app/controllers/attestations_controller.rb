@@ -5,7 +5,7 @@
 # rh_sk_ secret key. The client never holds a key or calls Root Herald directly.
 class AttestationsController < ApplicationController
   # Configured once in config/initializers/rootherald.rb (see RH below).
-  RH = RootHerald::BackgroundCheck.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
+  RH = RootHerald::Client.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 
   def create
     # 1) mint a nonce; in production, hand challenge.nonce to the client first,

@@ -2,7 +2,7 @@
 
 Root Herald server SDK for Ruby 3.1+.
 
-**Background-Check (server → server)** via `RootHerald::BackgroundCheck`: your
+**Background-Check (server → server)** via `RootHerald::Client`: your
 dumb client collects an opaque evidence blob and hands it to *your* server,
 which appraises it with Root Herald using your `rh_sk_` secret key. The client
 never holds a key or talks to Root Herald.
@@ -23,7 +23,7 @@ require "rootherald"
 
 # Construct with your SECRET key (rh_sk_…). Any key without the rh_sk_ prefix
 # is rejected.
-rh = RootHerald::BackgroundCheck.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
+rh = RootHerald::Client.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 
 # 1) Mint a relay-friendly nonce; send challenge.nonce down to the client.
 challenge = rh.issue_challenge
@@ -41,7 +41,6 @@ result.enrollment_required   # => true when the device must enroll first (attest
 ```
 
 > `issue_challenge`/`verify` are the ABI 2.0 names; the previous
-> `create_challenge`/`attest` remain as deprecated aliases.
 
 ### One-time device enroll (relay)
 
@@ -71,7 +70,7 @@ error. Only protocol/auth/quota problems raise: `InvalidSecretKeyError` (401),
 
 ## Rails
 
-`RootHerald::BackgroundCheck` is a plain object — instantiate it in a controller
+`RootHerald::Client` is a plain object — instantiate it in a controller
 (or an initializer) and call it from your actions. See
 [`samples/rails-demo`](samples/rails-demo) for a full `POST /attestations`
 example.

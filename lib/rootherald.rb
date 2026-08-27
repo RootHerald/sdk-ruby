@@ -3,11 +3,11 @@
 require_relative "rootherald/version"
 require_relative "rootherald/verdict"
 require_relative "rootherald/errors"
-require_relative "rootherald/background_check"
+require_relative "rootherald/client"
 
 # Root Herald server SDK.
 #
-# Background-Check (server -> server) via RootHerald::BackgroundCheck: your
+# Background-Check (server -> server) via RootHerald::Client: your
 # dumb client collects an opaque evidence blob and hands it to your server,
 # which appraises it with Root Herald using its +rh_sk_+ secret key. The
 # client never holds a key or talks to Root Herald.
@@ -15,7 +15,7 @@ require_relative "rootherald/background_check"
 # Pure Ruby — depends on +faraday+.
 #
 #   # Background-Check (relay the keyless client's opaque blobs with rh_sk_)
-#   rh = RootHerald::BackgroundCheck.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
+#   rh = RootHerald::Client.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 #
 #   # One-time device enroll (relay the client's EnrollBegin/EnrollComplete blobs)
 #   enroll = rh.relay_enroll(enroll_request_blob)

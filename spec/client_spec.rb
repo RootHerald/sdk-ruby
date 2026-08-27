@@ -2,9 +2,9 @@
 
 require "spec_helper"
 
-RSpec.describe RootHerald::BackgroundCheck do
+RSpec.describe RootHerald::Client do
   def bg(http_transport)
-    RootHerald::BackgroundCheck.new(
+    RootHerald::Client.new(
       secret_key: "rh_sk_test_xxx",
       base_url: "https://api.example.test",
       http_transport: http_transport
@@ -12,7 +12,7 @@ RSpec.describe RootHerald::BackgroundCheck do
   end
 
   it "rejects a key without the rh_sk_ prefix" do
-    expect { RootHerald::BackgroundCheck.new(secret_key: "rh_bogus_abc") }
+    expect { RootHerald::Client.new(secret_key: "rh_bogus_abc") }
       .to raise_error(ArgumentError)
   end
 
@@ -28,7 +28,7 @@ RSpec.describe RootHerald::BackgroundCheck do
     ""
   ].each do |bad|
     it "rejects the insecure base_url #{bad.inspect}" do
-      expect { RootHerald::BackgroundCheck.new(secret_key: "rh_sk_test_xxx", base_url: bad) }
+      expect { RootHerald::Client.new(secret_key: "rh_sk_test_xxx", base_url: bad) }
         .to raise_error(ArgumentError, /https/)
     end
   end
@@ -41,13 +41,13 @@ RSpec.describe RootHerald::BackgroundCheck do
     "http://[::1]:5000"
   ].each do |good|
     it "accepts the base_url #{good.inspect}" do
-      expect { RootHerald::BackgroundCheck.new(secret_key: "rh_sk_test_xxx", base_url: good) }
+      expect { RootHerald::Client.new(secret_key: "rh_sk_test_xxx", base_url: good) }
         .not_to raise_error
     end
   end
 
   it "rejects an empty key" do
-    expect { RootHerald::BackgroundCheck.new(secret_key: "") }
+    expect { RootHerald::Client.new(secret_key: "") }
       .to raise_error(ArgumentError)
   end
 
@@ -61,7 +61,7 @@ RSpec.describe RootHerald::BackgroundCheck do
         "challengeId" => "ch_1", "nonce" => "n_1", "expiresAt" => "2030-01-01T00:00:00Z"
       ) }
     })
-    challenge = c.create_challenge(device_hint: "device-hint")
+    challenge = c.issue_challenge(device_hint: "device-hint")
     expect(challenge.challenge_id).to eq("ch_1")
     expect(challenge.nonce).to eq("n_1")
     expect(seen[:method]).to eq(:post)
@@ -79,7 +79,7 @@ RSpec.describe RootHerald::BackgroundCheck do
         "enrollmentRequired" => false
       ) }
     })
-    result = c.attest({ "quote" => "..." }, challenge_id: "ch_1")
+    result = c.verify({ "quote" => "..." }, challenge_id: "ch_1")
     expect(result.verdict).to eq(:allow)
     expect(result.assurance_claims_met).to eq(["urn:rootherald:assurance:hardware-backed"])
     expect(result.enrollment_required).to be(false)
@@ -104,7 +104,7 @@ RSpec.describe RootHerald::BackgroundCheck do
         }
       ) }
     })
-    result = c.attest({}, challenge_id: "ch_1")
+    result = c.verify({}, challenge_id: "ch_1")
     expect(result.cohort_key).to eq("tpm20:win11:sb1:abc123")
     expect(result.cohort_scope).to eq("tenant-fleet")
     expect(result.cohort_prevalence).to eq(0.042)
@@ -115,7 +115,7 @@ RSpec.describe RootHerald::BackgroundCheck do
 
   it "leaves cohort accessors nil when the server omits them" do
     c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }) } })
-    result = c.attest({}, challenge_id: "ch_1")
+    result = c.verify({}, challenge_id: "ch_1")
     expect(result.cohort_key).to be_nil
     expect(result.cohort_prevalence).to be_nil
     expect(result.novel_profile).to be_nil
@@ -124,7 +124,7 @@ RSpec.describe RootHerald::BackgroundCheck do
 
   it "treats a fail verdict as a verdict, not an error" do
     c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "fail" } }) } })
-    result = c.attest({}, challenge_id: "ch_1")
+    result = c.verify({}, challenge_id: "ch_1")
     expect(result.verdict).to eq(:deny)
   end
 
@@ -137,11 +137,11 @@ RSpec.describe RootHerald::BackgroundCheck do
   }.each do |status, klass|
     it "maps HTTP #{status} to #{klass}" do
       c = bg(->(*_args) { { status: status, body: '{"error":"x","message":"boom"}' } })
-      expect { c.attest({}, challenge_id: "ch_1") }.to raise_error(klass)
+      expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(klass)
     end
   end
 
-  # ── ABI 2.0 renamed primaries (create_challenge/attest are deprecated aliases) ──
+  # ── the primaries ──
 
   it "issue_challenge mints a challenge with the bearer secret key" do
     seen = {}
@@ -209,15 +209,7 @@ RSpec.describe RootHerald::BackgroundCheck do
     expect { c.verify({}, challenge_id: "") }.to raise_error(RootHerald::ChallengeError)
   end
 
-  it "keeps create_challenge / attest as working deprecated aliases" do
-    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }) } })
-    expect(c.attest({}, challenge_id: "ch_1").verdict).to eq(:allow)
-    c2 = bg(->(*_args) {
-      { status: 200, body: JSON.generate("challengeId" => "c", "nonce" => "n", "expiresAt" => "2030-01-01T00:00:00Z") }
-    })
-    expect(c2.create_challenge.challenge_id).to eq("c")
-  end
-
+  
   # ── relay_enroll (POST /api/v1/devices/enroll) ──
 
   it "relay_enroll on 201 returns the MakeCredential challenge (fresh enroll)" do
