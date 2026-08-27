@@ -19,7 +19,7 @@ appraises it with Root Herald using the `rh_sk_` secret key.
 
 ```ruby
 class AttestationsController < ApplicationController
-  RH = RootHerald::BackgroundCheck.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
+  RH = RootHerald::Client.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 
   def create
     challenge = RH.issue_challenge

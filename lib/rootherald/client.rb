@@ -18,7 +18,7 @@ module RootHerald
   #
   # The verdict is computed by Root Herald and returned to the backend — it never
   # travels through the keyless client.
-  class BackgroundCheck
+  class Client
     DEFAULT_BASE_URL = "https://rootherald.io"
     SECRET_KEY_PREFIX = "rh_sk_"
 
@@ -328,18 +328,6 @@ module RootHerald
         assurance_claims_met: data["assuranceClaimsMet"].is_a?(Array) ? data["assuranceClaimsMet"] : [],
         enrollment_required: data["enrollmentRequired"] == true
       )
-    end
-
-    # @deprecated Renamed to #issue_challenge for the Client ABI 2.0 backend
-    #   contract. Retained as a thin alias for backwards compatibility.
-    def create_challenge(device_hint: nil)
-      issue_challenge(device_hint: device_hint)
-    end
-
-    # @deprecated Renamed to #verify for the Client ABI 2.0 backend contract.
-    #   Retained as a thin alias for backwards compatibility.
-    def attest(evidence, challenge_id:, policy: nil)
-      verify(evidence, challenge_id: challenge_id, policy: policy)
     end
 
     private
