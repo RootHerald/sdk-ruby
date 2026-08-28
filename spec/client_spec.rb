@@ -228,7 +228,6 @@ RSpec.describe RootHerald::Client do
       "ekCertPem" => "-----BEGIN CERTIFICATE-----", "ekCertificateChain" => ["int=="]
     }
     result = c.relay_enroll(blob)
-    expect(result.already_enrolled?).to be(false)
     expect(result.device_id).to eq("dev-1")
     expect(result.challenge.credential_blob).to eq("cred==")
     expect(result.challenge.encrypted_secret).to eq("sec==")
@@ -239,13 +238,6 @@ RSpec.describe RootHerald::Client do
     expect(seen[:body]).to eq(blob)
   end
 
-  it "relay_enroll on 409 returns already_enrolled and skips activate" do
-    c = bg(->(*_args) { { status: 409, body: JSON.generate("deviceId" => "dev-9") } })
-    result = c.relay_enroll("ekPublicKey" => "e", "akPublicArea" => "a")
-    expect(result.already_enrolled?).to be(true)
-    expect(result.device_id).to eq("dev-9")
-    expect(result.challenge).to be_nil
-  end
 
   it "relay_enroll raises if a 409 omits deviceId" do
     c = bg(->(*_args) { { status: 409, body: "{}" } })

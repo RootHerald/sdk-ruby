@@ -11,7 +11,7 @@ module RootHerald
   # contact) and hands them to the customer's own server. The server uses this
   # client, authenticated with its +rh_sk_+ secret key, to relay them to Root
   # Herald. It mirrors @rootherald/node's four backend helpers:
-  #   1. #relay_enroll    — POST /api/v1/devices/enroll   (201 fresh / 409 bound)
+  #   1. #relay_enroll    — POST /api/v1/devices/enroll
   #   2. #relay_activate  — POST /api/v1/devices/activate
   #   3. #issue_challenge — POST /api/v1/attestations/challenge (relay-friendly nonce)
   #   4. #verify          — POST /api/v1/attestations/verify     (appraise → verdict)
@@ -31,22 +31,17 @@ module RootHerald
     # (its +EnrollComplete+ leg).
     EnrollChallenge = Struct.new(:device_id, :credential_blob, :encrypted_secret, keyword_init: true)
 
-    # Resolved result of the enroll-relay leg (#relay_enroll), normalizing the
-    # asymmetric +201+/+409+ HTTP outcomes into one shape so callers branch on
-    # #already_enrolled? instead of re-parsing the HTTP status — mirroring
+    # Result of the enroll-relay leg (#relay_enroll), mirroring
     # @rootherald/node's +RelayEnrollResult+.
     #
-    # * +already_enrolled == false+ — fresh +201+ enroll: +challenge+ (an
-    #   {EnrollChallenge}) is present; relay it to the client's +EnrollComplete+,
-    #   then call #relay_activate.
-    # * +already_enrolled == true+ — +409+ short-circuit: the device is already
-    #   bound, so SKIP the activate leg and just use +device_id+. No +challenge+.
+    # Enrolment always issues a challenge, including for a device already known —
+    # re-enrolment is how a device rotates its attestation key, so
+    # short-circuiting it would make rotation impossible. Relay +challenge+ to
+    # the client's +EnrollComplete+, then call #relay_activate.
     #
-    # Either way +device_id+ is resolved.
-    RelayEnrollResult = Struct.new(:already_enrolled, :device_id, :challenge, keyword_init: true) do
-      # @return [Boolean] true when the device was already enrolled (409)
-      def already_enrolled? = already_enrolled == true
-    end
+    # +device_id+ is THIS tenant's alias for the device, not a global identifier:
+    # another tenant enrolling the same silicon is told a different one.
+    RelayEnrollResult = Struct.new(:device_id, :challenge, keyword_init: true)
 
     # The terminal response of the activate-relay leg (#relay_activate) —
     # POST /api/v1/devices/activate. +device_id+ is the load-bearing field the
@@ -178,15 +173,8 @@ module RootHerald
     # Enroll relay — leg 1. POST /api/v1/devices/enroll.
     #
     # Relays the client's +EnrollBegin()+ blob to Root Herald with the +rh_sk_+
-    # secret and resolves the asymmetric response:
-    #
-    # * +201+ — a fresh enroll: returns a {RelayEnrollResult} with
-    #   +already_enrolled == false+ and +challenge+ (an {EnrollChallenge}). Hand
-    #   +challenge+ to the client's +EnrollComplete+, then relay the result to
-    #   #relay_activate.
-    # * +409+ — the device is already enrolled: returns a {RelayEnrollResult}
-    #   with +already_enrolled == true+ and only +device_id+ (no challenge). SKIP
-    #   the activate leg — the device is already bound; just use +device_id+.
+    # secret and returns the challenge to hand back to the client's
+    # +EnrollComplete+, whose result goes to #relay_activate.
     #
     # The client never holds the +rh_sk_+ key and never talks to Root Herald;
     # this backend helper is the only thing that does.
@@ -207,18 +195,6 @@ module RootHerald
 
       status, body = raw_post("/api/v1/devices/enroll", enroll_request_blob)
 
-      # 409 = already enrolled: the body carries only deviceId. Resolve it and
-      # signal "skip activate" instead of treating it as an error.
-      if status == 409
-        data = parse_object(409, body)
-        device_id = data["deviceId"]
-        unless device_id.is_a?(String) && !device_id.empty?
-          raise HttpError.new(409, body, "already-enrolled (409) response missing deviceId")
-        end
-
-        return RelayEnrollResult.new(already_enrolled: true, device_id: device_id, challenge: nil)
-      end
-
       raise map_error(status, body) if status >= 400
 
       data = parse_object(status, body)
@@ -230,7 +206,6 @@ module RootHerald
       end
 
       RelayEnrollResult.new(
-        already_enrolled: false,
         device_id: device_id,
         challenge: EnrollChallenge.new(
           device_id: device_id,
@@ -244,8 +219,7 @@ module RootHerald
     #
     # Relays the client's +EnrollComplete()+ blob (the decrypted credential
     # secret) to Root Herald, completing the EK→AK credential-activation
-    # handshake. Call this only when #relay_enroll returned
-    # +already_enrolled == false+.
+    # handshake, with the blob the client produced from #relay_enroll's challenge.
     #
     # @param activation_response [Hash] the opaque +EnrollComplete()+ blob,
     #        relayed verbatim. Wire shape (camelCase keys): +deviceId+,
@@ -342,7 +316,7 @@ module RootHerald
 
     # Authenticated JSON POST returning +[status, body]+ verbatim, leaving status
     # interpretation to the caller (used by #relay_enroll, which must inspect the
-    # enroll +409+). Mirrors @rootherald/node's +rawPost+.
+    # Mirrors @rootherald/node's +rawPost+.
     def raw_post(path, body)
       url = "#{@base_url}#{path}"
       headers = {

@@ -45,22 +45,19 @@ result.enrollment_required   # => true when the device must enroll first (attest
 ### One-time device enroll (relay)
 
 The keyless client produces opaque enroll blobs; your backend relays them with
-the `rh_sk_` secret. The enroll endpoint is asymmetric: a fresh device returns
-a MakeCredential challenge (`201`); an already-bound device short-circuits
-(`409`), in which case you **skip** the activate leg.
+the `rh_sk_` secret. Every enrolment returns a MakeCredential challenge, a
+device already known included — re-enrolment is how a device rotates its
+attestation key. `device_id` is your tenant's alias for the device, not a global
+identifier.
 
 ```ruby
 # 1) Relay the client's EnrollBegin() blob (opaque, passed through verbatim).
 enroll = rh.relay_enroll(enroll_request_blob) # { ekPublicKey:, akPublicArea:, platform:, ekCertPem?:, ekCertificateChain?: }
 
-if enroll.already_enrolled?
-  device_id = enroll.device_id           # already bound — done
-else
-  # 2) Hand enroll.challenge (credential_blob/encrypted_secret) to the client's
-  #    EnrollComplete(), then relay the activation blob it returns.
-  activation = rh.relay_activate(activation_response) # { deviceId:, decryptedSecret:, akPublicKey?: }
-  device_id = activation.device_id
-end
+# 2) Hand enroll.challenge (credential_blob/encrypted_secret) to the client's
+#    EnrollComplete(), then relay the activation blob it returns.
+activation = rh.relay_activate(activation_response) # { deviceId:, decryptedSecret:, akPublicKey?: }
+device_id = activation.device_id
 ```
 
 An un-enrolled / failing device is a verdict (`:deny`/`:warn`), **not** an

@@ -19,10 +19,8 @@ require_relative "rootherald/client"
 #
 #   # One-time device enroll (relay the client's EnrollBegin/EnrollComplete blobs)
 #   enroll = rh.relay_enroll(enroll_request_blob)
-#   unless enroll.already_enrolled?
-#     # hand enroll.challenge to the client's EnrollComplete, then:
-#     rh.relay_activate(activation_response)
-#   end
+#   # hand enroll.challenge to the client's EnrollComplete, then:
+#   rh.relay_activate(activation_response)
 #   device_id = enroll.device_id
 #
 #   # Per-attestation appraisal
