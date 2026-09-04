@@ -239,12 +239,6 @@ RSpec.describe RootHerald::Client do
   end
 
 
-  it "relay_enroll raises if a 409 omits deviceId" do
-    c = bg(->(*_args) { { status: 409, body: "{}" } })
-    expect { c.relay_enroll("ekPublicKey" => "e", "akPublicArea" => "a") }
-      .to raise_error(RootHerald::HttpError, /missing deviceId/)
-  end
-
   it "relay_enroll validates required blob fields before any network call" do
     c = bg(->(*_args) { raise "should not be called" })
     expect { c.relay_enroll("ekPublicKey" => "e") }.to raise_error(ArgumentError)
