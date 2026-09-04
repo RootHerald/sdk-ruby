@@ -11,10 +11,10 @@ module RootHerald
   # contact) and hands them to the customer's own server. The server uses this
   # client, authenticated with its +rh_sk_+ secret key, to relay them to Root
   # Herald. It mirrors @rootherald/node's four backend helpers:
-  #   1. #relay_enroll    — POST /api/v1/devices/enroll
-  #   2. #relay_activate  — POST /api/v1/devices/activate
-  #   3. #issue_challenge — POST /api/v1/attestations/challenge (relay-friendly nonce)
-  #   4. #verify          — POST /api/v1/attestations/verify     (appraise → verdict)
+  #   1. #relay_enroll    — POST /api/v1/attest/enroll
+  #   2. #relay_activate  — POST /api/v1/attest/activate
+  #   3. #issue_challenge — POST /api/v1/attest/challenge (relay-friendly nonce)
+  #   4. #verify          — POST /api/v1/attest/verify     (appraise → verdict)
   #
   # The verdict is computed by Root Herald and returned to the backend — it never
   # travels through the keyless client.
@@ -26,7 +26,7 @@ module RootHerald
     Challenge = Struct.new(:challenge_id, :nonce, :expires_at, keyword_init: true)
 
     # The MakeCredential challenge — the +201+ response body of
-    # POST /api/v1/devices/enroll. +credential_blob+ / +encrypted_secret+ are the
+    # POST /api/v1/attest/enroll. +credential_blob+ / +encrypted_secret+ are the
     # TPM2_MakeCredential outputs the client feeds into TPM2_ActivateCredential
     # (its +EnrollComplete+ leg).
     EnrollChallenge = Struct.new(:device_id, :credential_blob, :encrypted_secret, keyword_init: true)
@@ -44,7 +44,7 @@ module RootHerald
     RelayEnrollResult = Struct.new(:device_id, :challenge, keyword_init: true)
 
     # The terminal response of the activate-relay leg (#relay_activate) —
-    # POST /api/v1/devices/activate. +device_id+ is the load-bearing field the
+    # POST /api/v1/attest/activate. +device_id+ is the load-bearing field the
     # backend maps to its user.
     ActivateResult = Struct.new(:device_id, :status, :enrolled_at, keyword_init: true)
 
@@ -170,7 +170,7 @@ module RootHerald
       end
     end
 
-    # Enroll relay — leg 1. POST /api/v1/devices/enroll.
+    # Enroll relay — leg 1. POST /api/v1/attest/enroll.
     #
     # Relays the client's +EnrollBegin()+ blob to Root Herald with the +rh_sk_+
     # secret and returns the challenge to hand back to the client's
@@ -193,7 +193,7 @@ module RootHerald
               "relay_enroll requires an enroll request blob with ekPublicKey and akPublicArea"
       end
 
-      status, body = raw_post("/api/v1/devices/enroll", enroll_request_blob)
+      status, body = raw_post("/api/v1/attest/enroll", enroll_request_blob)
 
       raise map_error(status, body) if status >= 400
 
@@ -215,7 +215,7 @@ module RootHerald
       )
     end
 
-    # Enroll relay — leg 2. POST /api/v1/devices/activate.
+    # Enroll relay — leg 2. POST /api/v1/attest/activate.
     #
     # Relays the client's +EnrollComplete()+ blob (the decrypted credential
     # secret) to Root Herald, completing the EK→AK credential-activation
@@ -235,7 +235,7 @@ module RootHerald
               "relay_activate requires an activation response with deviceId and decryptedSecret"
       end
 
-      data = post("/api/v1/devices/activate", activation_response)
+      data = post("/api/v1/attest/activate", activation_response)
       out_device_id = data["deviceId"]
       raise HttpError.new(200, data.to_json, "activate response missing deviceId") unless out_device_id.is_a?(String)
 
@@ -246,7 +246,7 @@ module RootHerald
       )
     end
 
-    # POST /api/v1/attestations/challenge — mint a relay-friendly nonce. Relay
+    # POST /api/v1/attest/challenge — mint a relay-friendly nonce. Relay
     # the nonce to the client; the client quotes over it, then submit the
     # resulting evidence with #verify using the returned challenge_id.
     #
@@ -255,7 +255,7 @@ module RootHerald
     def issue_challenge(device_hint: nil)
       body = {}
       body["deviceHint"] = device_hint unless device_hint.nil?
-      data = post("/api/v1/attestations/challenge", body)
+      data = post("/api/v1/attest/challenge", body)
       unless data["challengeId"] && data["nonce"] && data["expiresAt"]
         raise HttpError.new(200, data.to_json, "challenge response missing challengeId/nonce/expiresAt")
       end
@@ -267,7 +267,7 @@ module RootHerald
       )
     end
 
-    # POST /api/v1/attestations/verify — submit the opaque evidence blob for
+    # POST /api/v1/attest/verify — submit the opaque evidence blob for
     # server-side appraisal and return the verdict.
     #
     # An un-enrolled / failing device is NOT an error — it returns a normal
@@ -291,7 +291,7 @@ module RootHerald
       body["policy"] = policy unless policy.nil?
       body["requestedDisclosureClass"] = requested_disclosure_class unless requested_disclosure_class.nil?
 
-      data = post("/api/v1/attestations/verify", body)
+      data = post("/api/v1/attest/verify", body)
       verdict_data = data["verdict"]
       raise HttpError.new(200, data.to_json, "verify response missing verdict") unless verdict_data.is_a?(Hash)
 
