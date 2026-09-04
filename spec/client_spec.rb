@@ -65,7 +65,7 @@ RSpec.describe RootHerald::Client do
     expect(challenge.challenge_id).to eq("ch_1")
     expect(challenge.nonce).to eq("n_1")
     expect(seen[:method]).to eq(:post)
-    expect(seen[:url]).to end_with("/api/v1/attestations/challenge")
+    expect(seen[:url]).to end_with("/api/v1/attest/challenge")
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
   end
 
@@ -156,7 +156,7 @@ RSpec.describe RootHerald::Client do
     challenge = c.issue_challenge(device_hint: "dh")
     expect(challenge.challenge_id).to eq("ch_2")
     expect(seen[:method]).to eq(:post)
-    expect(seen[:url]).to end_with("/api/v1/attestations/challenge")
+    expect(seen[:url]).to end_with("/api/v1/attest/challenge")
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
   end
 
@@ -173,7 +173,7 @@ RSpec.describe RootHerald::Client do
     })
     result = c.verify({ "quote" => "..." }, challenge_id: "ch_1", policy: "default")
     expect(result.verdict).to eq(:allow)
-    expect(seen[:url]).to end_with("/api/v1/attestations/verify")
+    expect(seen[:url]).to end_with("/api/v1/attest/verify")
     expect(seen[:body]["challengeId"]).to eq("ch_1")
     expect(seen[:body]["evidence"]["quote"]).to eq("...")
     expect(seen[:body]["policy"]).to eq("default")
@@ -210,7 +210,7 @@ RSpec.describe RootHerald::Client do
   end
 
   
-  # ── relay_enroll (POST /api/v1/devices/enroll) ──
+  # ── relay_enroll (POST /api/v1/attest/enroll) ──
 
   it "relay_enroll on 201 returns the MakeCredential challenge (fresh enroll)" do
     seen = {}
@@ -232,7 +232,7 @@ RSpec.describe RootHerald::Client do
     expect(result.challenge.credential_blob).to eq("cred==")
     expect(result.challenge.encrypted_secret).to eq("sec==")
     expect(seen[:method]).to eq(:post)
-    expect(seen[:url]).to end_with("/api/v1/devices/enroll")
+    expect(seen[:url]).to end_with("/api/v1/attest/enroll")
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
     # opaque pass-through: every wire field relayed verbatim
     expect(seen[:body]).to eq(blob)
@@ -265,7 +265,7 @@ RSpec.describe RootHerald::Client do
       .to raise_error(RootHerald::InvalidSecretKeyError)
   end
 
-  # ── relay_activate (POST /api/v1/devices/activate) ──
+  # ── relay_activate (POST /api/v1/attest/activate) ──
 
   it "relay_activate relays the decrypted secret and returns the device" do
     seen = {}
@@ -280,7 +280,7 @@ RSpec.describe RootHerald::Client do
     expect(result.device_id).to eq("dev-1")
     expect(result.status).to eq("enrolled")
     expect(result.enrolled_at).to eq("2030-01-01T00:00:00Z")
-    expect(seen[:url]).to end_with("/api/v1/devices/activate")
+    expect(seen[:url]).to end_with("/api/v1/attest/activate")
     expect(seen[:body]).to eq("deviceId" => "dev-1", "decryptedSecret" => "secret==")
   end
 
