@@ -64,9 +64,124 @@ RSpec.describe RootHerald::Client do
     challenge = c.issue_challenge(device_hint: "device-hint")
     expect(challenge.challenge_id).to eq("ch_1")
     expect(challenge.nonce).to eq("n_1")
+    expect(challenge.challenge).to be_nil
     expect(seen[:method]).to eq(:post)
     expect(seen[:url]).to end_with("/api/v1/attest/challenge")
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
+  end
+
+  # ── the challenge carries the ask ──
+
+  it "issue_challenge sends the ask, policy and key purpose and returns the challenge string" do
+    seen = {}
+    c = bg(lambda { |_method, _url, _headers, body|
+      seen[:body] = JSON.parse(body)
+      { status: 200, body: JSON.generate(
+        "challengeId" => "ch_1", "challenge" => "rhc1.bm9uY2U.eyJhc2siOlsia2V5Il19",
+        "nonce" => "n_1", "expiresAt" => "2030-01-01T00:00:00Z"
+      ) }
+    })
+    challenge = c.issue_challenge(
+      device_hint: "hint",
+      ask: [RootHerald::Client::ASK_IDENTITY, :key],
+      policy: "rootherald:builtin:strict-hardware",
+      key_purpose: RootHerald::Client::KEY_PURPOSE_SIGN
+    )
+    expect(challenge.challenge).to eq("rhc1.bm9uY2U.eyJhc2siOlsia2V5Il19")
+    expect(challenge.nonce).to eq("n_1")
+    expect(seen[:body]["ask"]).to eq(%w[identity key])
+    expect(seen[:body]["policy"]).to eq("rootherald:builtin:strict-hardware")
+    expect(seen[:body]["keyPurpose"]).to eq("sign")
+    expect(seen[:body]["deviceHint"]).to eq("hint")
+  end
+
+  it "issue_challenge omits every unset field, an empty ask included" do
+    seen = {}
+    c = bg(lambda { |_method, _url, _headers, body|
+      seen[:body] = JSON.parse(body)
+      { status: 200, body: JSON.generate(
+        "challengeId" => "ch_1", "nonce" => "n_1", "expiresAt" => "2030-01-01T00:00:00Z"
+      ) }
+    })
+    c.issue_challenge
+    expect(seen[:body]).to eq({})
+    c.issue_challenge(ask: [])
+    expect(seen[:body]).to eq({})
+  end
+
+  let(:passing_verdict_with_key) do
+    {
+      "verdict" => { "device" => { "verdict" => "pass", "ueid" => "dev-9" } },
+      "assuranceClaimsMet" => [],
+      "enrollmentRequired" => false,
+      "key" => {
+        "keyId" => "key_1",
+        "jwk" => { "kty" => "EC", "crv" => "P-256", "x" => "eHg", "y" => "eXk" },
+        "purpose" => "sign",
+        "authPolicy" => "cG9saWN5",
+        "certifiedAt" => "2030-01-01T00:01:00Z"
+      }
+    }
+  end
+
+  it "verify exposes the certified key from the response root" do
+    c = bg(->(*_args) { { status: 200, body: JSON.generate(passing_verdict_with_key) } })
+    result = c.verify({}, challenge_id: "ch_1")
+    expect(result.verdict).to eq(:allow)
+    key = result.key
+    expect(key).to be_a(RootHerald::Client::CertifiedKey)
+    expect(key.key_id).to eq("key_1")
+    expect(key.jwk).to eq("kty" => "EC", "crv" => "P-256", "x" => "eHg", "y" => "eXk")
+    expect(key.purpose).to eq("sign")
+    expect(key.auth_policy).to eq("cG9saWN5")
+    expect(key.certified_at).to eq(Time.utc(2030, 1, 1, 0, 1, 0))
+  end
+
+  it "verify leaves key nil when the server omits it" do
+    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }) } })
+    expect(c.verify({}, challenge_id: "ch_1").key).to be_nil
+    c = bg(->(*_args) {
+      { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }, "key" => nil) }
+    })
+    expect(c.verify({}, challenge_id: "ch_1").key).to be_nil
+  end
+
+  it "verify treats authPolicy as optional on the key" do
+    wire = passing_verdict_with_key
+    wire["key"].delete("authPolicy")
+    c = bg(->(*_args) { { status: 200, body: JSON.generate(wire) } })
+    expect(c.verify({}, challenge_id: "ch_1").key.auth_policy).to be_nil
+  end
+
+  it "verify rejects a malformed key" do
+    c = bg(->(*_args) {
+      { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass" } }, "key" => { "keyId" => "k" }) }
+    })
+    expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(RootHerald::HttpError, /key/)
+  end
+
+  it "maps a 422 policy_downgrade to PolicyDowngradeError with the server code" do
+    c = bg(->(*_args) {
+      { status: 422, body: '{"error":"policy_downgrade","message":"verify policy is looser than the challenge"}' }
+    })
+    expect { c.verify({}, challenge_id: "ch_1", policy: "loose") }.to raise_error(RootHerald::PolicyDowngradeError) { |e|
+      expect(e.code).to eq("policy_downgrade")
+      expect(e.server_error).to eq("policy_downgrade")
+      expect(e.status).to eq(422)
+      expect(e.message).to eq("verify policy is looser than the challenge")
+    }
+  end
+
+  it "carries the server error code on every typed error" do
+    c = bg(->(*_args) { { status: 422, body: '{"error":"unknown_policy"}' } })
+    expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(RootHerald::UnknownPolicyError) { |e|
+      expect(e.server_error).to eq("unknown_policy")
+    }
+    c = bg(->(*_args) { { status: 409, body: '{"error":"challenge_expired_or_used","detail":"used"}' } })
+    expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(RootHerald::ChallengeError) { |e|
+      expect(e.server_error).to eq("challenge_expired_or_used")
+      expect(e.message).to eq("used")
+    }
   end
 
   it "attests and maps a pass verdict, surfacing the parity fields" do
@@ -231,11 +346,40 @@ RSpec.describe RootHerald::Client do
     expect(result.device_id).to eq("dev-1")
     expect(result.challenge.credential_blob).to eq("cred==")
     expect(result.challenge.encrypted_secret).to eq("sec==")
+    expect(result.challenge_id).to be_nil
     expect(seen[:method]).to eq(:post)
     expect(seen[:url]).to end_with("/api/v1/attest/enroll")
     expect(seen[:auth]).to eq("Bearer rh_sk_test_xxx")
     # opaque pass-through: every wire field relayed verbatim
     expect(seen[:body]).to eq(blob)
+  end
+
+  it "relay_enroll with a challenge_id sends the query parameter and echoes it back" do
+    seen = {}
+    c = bg(lambda { |_method, url, _headers, body|
+      seen[:url] = url
+      seen[:body] = JSON.parse(body)
+      { status: 201, body: JSON.generate(
+        "deviceId" => "dev-1", "credentialBlob" => "cred==", "encryptedSecret" => "sec==", "challengeId" => "ch 1"
+      ) }
+    })
+    result = c.relay_enroll({ "ekPublicKey" => "e", "akPublicArea" => "a" }, challenge_id: "ch 1")
+    expect(seen[:url]).to end_with("/api/v1/attest/enroll?challengeId=ch+1")
+    expect(seen[:body]).not_to have_key("challengeId")
+    expect(result.challenge_id).to eq("ch 1")
+    expect(result.device_id).to eq("dev-1")
+  end
+
+  it "relay_enroll maps a 422 admission_refused to AdmissionRefusedError" do
+    c = bg(->(*_args) {
+      { status: 422, body: '{"error":"admission_refused","detail":"firmware TPM under a discrete-only policy"}' }
+    })
+    expect { c.relay_enroll({ "ekPublicKey" => "e", "akPublicArea" => "a" }, challenge_id: "ch_1") }
+      .to raise_error(RootHerald::AdmissionRefusedError) { |e|
+        expect(e.code).to eq("admission_refused")
+        expect(e.server_error).to eq("admission_refused")
+        expect(e.message).to eq("firmware TPM under a discrete-only policy")
+      }
   end
 
 

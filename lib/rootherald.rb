@@ -3,6 +3,7 @@
 require_relative "rootherald/version"
 require_relative "rootherald/verdict"
 require_relative "rootherald/errors"
+require_relative "rootherald/key_signatures"
 require_relative "rootherald/client"
 
 # Root Herald server SDK.
@@ -23,9 +24,14 @@ require_relative "rootherald/client"
 #   rh.relay_activate(activation_response)
 #   device_id = enroll.device_id
 #
-#   # Per-attestation appraisal
-#   challenge = rh.issue_challenge
+#   # Per-attestation appraisal; the challenge carries the ask
+#   challenge = rh.issue_challenge(ask: %w[identity posture])
 #   result = rh.verify(evidence, challenge_id: challenge.challenge_id)
 #   proceed_with_signup if result.verdict == :allow
+#
+#   # Ask for a key too, and verify later device signatures locally
+#   challenge = rh.issue_challenge(ask: %w[identity key], key_purpose: "sign")
+#   key = rh.verify(evidence, challenge_id: challenge.challenge_id).key
+#   RootHerald::KeySignatures.verify(key.jwk, message, signature)
 module RootHerald
 end

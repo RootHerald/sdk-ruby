@@ -25,13 +25,14 @@ require "rootherald"
 # is rejected.
 rh = RootHerald::Client.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 
-# 1) Mint a relay-friendly nonce; send challenge.nonce down to the client.
-challenge = rh.issue_challenge
+# 1) Mint a challenge; relay challenge.challenge to the client verbatim.
+#    The challenge carries the ask: what the device must prove is fixed here.
+challenge = rh.issue_challenge(ask: %w[identity posture],                  # the default when omitted
+                               policy: "rootherald:builtin:strict-hardware") # optional, bound to the challenge
 
-# 2) The client quotes over the nonce and returns an opaque evidence blob;
+# 2) The client quotes over the challenge and returns an opaque evidence blob;
 #    submit it for appraisal.
 result = rh.verify(evidence, challenge_id: challenge.challenge_id,
-                   policy: "rootherald:builtin:strict-hardware",   # optional
                    requested_disclosure_class: "pseudonymous")     # optional ceiling
 
 proceed_with_signup if result.verdict == :allow
@@ -40,7 +41,24 @@ result.assurance_claims_met  # => ["urn:rootherald:assurance:…"] satisfied ass
 result.enrollment_required   # => true when the device must enroll first (attest-first)
 ```
 
-> `issue_challenge`/`verify` are the ABI 2.0 names; the previous
+A policy named at verify time may only tighten the challenge's; a looser one
+is refused with `PolicyDowngradeError` (422 `policy_downgrade`).
+
+### Certified device key
+
+Ask for `key` and a passing verdict also certifies a fresh TPM-resident P-256
+signing key. Store `result.key` against the user; later signatures from the
+device verify locally, with no Root Herald call.
+
+```ruby
+challenge = rh.issue_challenge(ask: %w[identity key], key_purpose: "sign")
+result = rh.verify(evidence, challenge_id: challenge.challenge_id)
+key = result.key                      # present only on a pass with a key ask
+store(user_id, key.key_id, key.jwk)
+
+# Later: the device signed `message` with that key (raw r||s or DER).
+ok = RootHerald::KeySignatures.verify(key.jwk, message, signature)
+```
 
 ### One-time device enroll (relay)
 
@@ -52,7 +70,9 @@ identifier.
 
 ```ruby
 # 1) Relay the client's EnrollBegin() blob (opaque, passed through verbatim).
-enroll = rh.relay_enroll(enroll_request_blob) # { ekPublicKey:, akPublicArea:, platform:, ekCertPem?:, ekCertificateChain?: }
+#    Pass a live challenge_id to run admission against that challenge's policy;
+#    a device that could never satisfy it is refused with AdmissionRefusedError.
+enroll = rh.relay_enroll(enroll_request_blob, challenge_id: challenge.challenge_id) # { ekPublicKey:, akPublicArea:, platform:, ekCertPem?:, ekCertificateChain?: }
 
 # 2) Hand enroll.challenge (credential_blob/encrypted_secret) to the client's
 #    EnrollComplete(), then relay the activation blob it returns.
@@ -62,12 +82,13 @@ device_id = activation.device_id
 
 An un-enrolled / failing device is a verdict (`:deny`/`:warn`), **not** an
 error. Only protocol/auth/quota problems raise: `InvalidSecretKeyError` (401),
-`UnknownPolicyError` (422), `ChallengeError` (409), `InvalidEvidenceError`
+`UnknownPolicyError` / `PolicyDowngradeError` / `AdmissionRefusedError` (422,
+told apart by `server_error`), `ChallengeError` (409), `InvalidEvidenceError`
 (400), `QuotaExceededError` (429).
 
 ## Rails
 
 `RootHerald::Client` is a plain object — instantiate it in a controller
 (or an initializer) and call it from your actions. See
-[`samples/rails-demo`](samples/rails-demo) for a full `POST /attestations`
-example.
+[`samples/rails-demo`](samples/rails-demo) for a full example: `POST
+/challenges`, `POST /attestations` and `POST /signatures`.
