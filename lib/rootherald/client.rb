@@ -54,14 +54,14 @@ module RootHerald
     # Result of the enroll-relay leg (#relay_enroll), mirroring
     # @rootherald/node's +RelayEnrollResult+.
     #
-    # Enrolment always issues a challenge, including for a device already known —
-    # re-enrolment is how a device rotates its attestation key, so
+    # Enrollment always issues a challenge, including for a device already known —
+    # re-enrollment is how a device rotates its attestation key, so
     # short-circuiting it would make rotation impossible. Relay +challenge+ to
     # the client's +EnrollComplete+, then call #relay_activate.
     #
     # +device_id+ is THIS tenant's alias for the device, not a global identifier:
     # another tenant enrolling the same silicon is told a different one.
-    # +challenge_id+ is the attestation challenge the enrolment was admitted
+    # +challenge_id+ is the attestation challenge the enrollment was admitted
     # against, when the server echoed one; nil otherwise.
     RelayEnrollResult = Struct.new(:device_id, :challenge, :challenge_id, keyword_init: true)
 

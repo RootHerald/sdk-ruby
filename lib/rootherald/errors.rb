@@ -45,7 +45,7 @@ module RootHerald
     def code = "policy_downgrade"
   end
 
-  # Enrolment was refused because the device can never satisfy the policy
+  # Enrollment was refused because the device can never satisfy the policy
   # bound to the supplied challenge_id — for example a firmware TPM under a
   # discrete-TPM-only policy (HTTP 422, server code "admission_refused"). The
   # server names the TPM class in the message.
