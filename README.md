@@ -63,8 +63,8 @@ ok = RootHerald::KeySignatures.verify(key.jwk, message, signature)
 ### One-time device enroll (relay)
 
 The keyless client produces opaque enroll blobs; your backend relays them with
-the `rh_sk_` secret. Every enrolment returns a MakeCredential challenge, a
-device already known included — re-enrolment is how a device rotates its
+the `rh_sk_` secret. Every enrollment returns a MakeCredential challenge, a
+device already known included — re-enrollment is how a device rotates its
 attestation key. `device_id` is your tenant's alias for the device, not a global
 identifier.
 
