@@ -27,8 +27,7 @@ rh = RootHerald::Client.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 
 # 1) Mint a challenge; relay challenge.challenge to the client verbatim.
 #    The challenge carries the ask: what the device must prove is fixed here.
-challenge = rh.issue_challenge(ask: %w[identity posture],                  # the default when omitted
-                               policy: "rootherald:builtin:strict-hardware") # optional, bound to the challenge
+challenge = rh.issue_challenge(ask: %w[identity posture]) # the default when omitted
 
 # 2) The client quotes over the challenge and returns an opaque evidence blob;
 #    submit it for appraisal.
@@ -41,8 +40,12 @@ result.assurance_claims_met  # => ["urn:rootherald:assurance:…"] satisfied ass
 result.enrollment_required   # => true when the device must enroll first (attest-first)
 ```
 
-A policy named at verify time may only tighten the challenge's; a looser one
-is refused with `PolicyDowngradeError` (422 `policy_downgrade`).
+Policies bind to your API key, not to calls. The key carries an identity
+policy and, on Pro, a posture policy; a posture ask runs under the posture
+policy and everything else under the identity policy. The resolved policy is
+pinned on the challenge when it is minted. Change what a key enforces from the
+dashboard or `PUT /api/v1/admin/api-keys/{id}/policies`; a `policy` field in a
+hand-built request body is refused with `400 policy_bound_to_key`.
 
 ### Certified device key
 
@@ -70,8 +73,8 @@ identifier.
 
 ```ruby
 # 1) Relay the client's EnrollBegin() blob (opaque, passed through verbatim).
-#    Pass a live challenge_id to run admission against that challenge's policy;
-#    a device that could never satisfy it is refused with AdmissionRefusedError.
+#    Admission runs under the key's identity policy; a device that could never
+#    satisfy it is refused with AdmissionRefusedError.
 enroll = rh.relay_enroll(enroll_request_blob, challenge_id: challenge.challenge_id) # { ekPublicKey:, akPublicArea:, platform:, ekCertPem?:, ekCertificateChain?: }
 
 # 2) Hand enroll.challenge (credential_blob/encrypted_secret) to the client's
@@ -82,9 +85,10 @@ device_id = activation.device_id
 
 An un-enrolled / failing device is a verdict (`:deny`/`:warn`), **not** an
 error. Only protocol/auth/quota problems raise: `InvalidSecretKeyError` (401),
-`UnknownPolicyError` / `PolicyDowngradeError` / `AdmissionRefusedError` (422,
-told apart by `server_error`), `ChallengeError` (409), `InvalidEvidenceError`
-(400), `QuotaExceededError` (429).
+`UnknownPolicyError` / `AdmissionRefusedError` (422, told apart by
+`server_error`; `unknown_policy` means a policy bound to the key no longer
+exists), `ChallengeError` (409), `InvalidEvidenceError` (400),
+`QuotaExceededError` (429).
 
 ## Rails
 

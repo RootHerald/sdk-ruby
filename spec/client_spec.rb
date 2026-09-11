@@ -72,7 +72,7 @@ RSpec.describe RootHerald::Client do
 
   # ── the challenge carries the ask ──
 
-  it "issue_challenge sends the ask, policy and key purpose and returns the challenge string" do
+  it "issue_challenge sends the ask and key purpose, never a policy, and returns the challenge string" do
     seen = {}
     c = bg(lambda { |_method, _url, _headers, body|
       seen[:body] = JSON.parse(body)
@@ -84,15 +84,19 @@ RSpec.describe RootHerald::Client do
     challenge = c.issue_challenge(
       device_hint: "hint",
       ask: [RootHerald::Client::ASK_IDENTITY, :key],
-      policy: "rootherald:builtin:strict-hardware",
       key_purpose: RootHerald::Client::KEY_PURPOSE_SIGN
     )
     expect(challenge.challenge).to eq("rhc1.bm9uY2U.eyJhc2siOlsia2V5Il19")
     expect(challenge.nonce).to eq("n_1")
-    expect(seen[:body]["ask"]).to eq(%w[identity key])
-    expect(seen[:body]["policy"]).to eq("rootherald:builtin:strict-hardware")
-    expect(seen[:body]["keyPurpose"]).to eq("sign")
-    expect(seen[:body]["deviceHint"]).to eq("hint")
+    expect(seen[:body]).to eq("deviceHint" => "hint", "ask" => %w[identity key], "keyPurpose" => "sign")
+    expect(seen[:body]).not_to have_key("policy")
+  end
+
+  it "issue_challenge has no policy keyword: policies bind to the API key" do
+    c = bg(->(*_args) { raise "should not be called" })
+    expect { c.issue_challenge(policy: "rootherald:builtin:strict-hardware") }.to raise_error(ArgumentError)
+    expect { c.verify({}, challenge_id: "ch_1", policy: "rootherald:builtin:strict-hardware") }
+      .to raise_error(ArgumentError)
   end
 
   it "issue_challenge omits every unset field, an empty ask included" do
@@ -160,15 +164,25 @@ RSpec.describe RootHerald::Client do
     expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(RootHerald::HttpError, /key/)
   end
 
-  it "maps a 422 policy_downgrade to PolicyDowngradeError with the server code" do
+  it "maps a 422 unknown_policy (a policy bound to the key no longer exists) to UnknownPolicyError" do
     c = bg(->(*_args) {
-      { status: 422, body: '{"error":"policy_downgrade","message":"verify policy is looser than the challenge"}' }
+      { status: 422, body: '{"error":"unknown_policy","message":"the policy bound to this key no longer exists"}' }
     })
-    expect { c.verify({}, challenge_id: "ch_1", policy: "loose") }.to raise_error(RootHerald::PolicyDowngradeError) { |e|
-      expect(e.code).to eq("policy_downgrade")
-      expect(e.server_error).to eq("policy_downgrade")
+    expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(RootHerald::UnknownPolicyError) { |e|
+      expect(e.code).to eq("unknown_policy")
+      expect(e.server_error).to eq("unknown_policy")
       expect(e.status).to eq(422)
-      expect(e.message).to eq("verify policy is looser than the challenge")
+      expect(e.message).to eq("the policy bound to this key no longer exists")
+    }
+  end
+
+  it "maps a 400 policy_bound_to_key (a policy field in a hand-built body) to InvalidEvidenceError" do
+    c = bg(->(*_args) {
+      { status: 400, body: '{"error":"policy_bound_to_key","message":"policy is bound to the API key"}' }
+    })
+    expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(RootHerald::InvalidEvidenceError) { |e|
+      expect(e.server_error).to eq("policy_bound_to_key")
+      expect(e.status).to eq(400)
     }
   end
 
@@ -286,12 +300,13 @@ RSpec.describe RootHerald::Client do
         "enrollmentRequired" => false
       ) }
     })
-    result = c.verify({ "quote" => "..." }, challenge_id: "ch_1", policy: "default")
+    result = c.verify({ "quote" => "..." }, challenge_id: "ch_1")
     expect(result.verdict).to eq(:allow)
     expect(seen[:url]).to end_with("/api/v1/attest/verify")
     expect(seen[:body]["challengeId"]).to eq("ch_1")
     expect(seen[:body]["evidence"]["quote"]).to eq("...")
-    expect(seen[:body]["policy"]).to eq("default")
+    # the policy is pinned on the challenge at mint; the body never names one
+    expect(seen[:body]).not_to have_key("policy")
     # requestedDisclosureClass is omitted when not supplied
     expect(seen[:body]).not_to have_key("requestedDisclosureClass")
   end

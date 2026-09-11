@@ -203,9 +203,9 @@ module RootHerald
     # The client never holds the +rh_sk_+ key and never talks to Root Herald;
     # this backend helper is the only thing that does.
     #
-    # Pass a live +challenge_id+ from #issue_challenge to run admission against
-    # the policy stored on that challenge instead of the tenant default; a
-    # device that could never satisfy it is refused before it gets an AK
+    # Admission runs under the identity policy bound to the API key, pinned on
+    # the challenge when a live +challenge_id+ from #issue_challenge is given;
+    # a device that could never satisfy it is refused before it gets an AK
     # (AdmissionRefusedError, 422 admission_refused).
     #
     # @param enroll_request_blob [Hash] the opaque +EnrollBegin()+ blob from the
@@ -288,22 +288,22 @@ module RootHerald
     # then submit the resulting evidence with #verify using the returned
     # challenge_id.
     #
-    # What the device must prove is fixed here, not at verify time: a policy
-    # named on the challenge is stored with it, and verify may only tighten it.
+    # What the device must prove is fixed here, not at verify time. Policies
+    # bind to the API key (an identity policy and, on Pro, a posture policy);
+    # the server resolves the policy from the key that mints the challenge and
+    # pins it on the challenge. A +policy+ field in a hand-built body is
+    # refused with 400 policy_bound_to_key.
     #
     # @param device_hint [String, nil] optional advisory device hint
     # @param ask [Array<String>, nil] any of ASK_IDENTITY / ASK_POSTURE /
     #        ASK_KEY; nil or empty means the server default, identity + posture
-    # @param policy [String, nil] tenant policy id/name or a
-    #        "rootherald:builtin:*" name, bound to the challenge
     # @param key_purpose [String, nil] purpose of the certified key when asking
     #        for ASK_KEY (KEY_PURPOSE_SIGN)
     # @return [Challenge]
-    def issue_challenge(device_hint: nil, ask: nil, policy: nil, key_purpose: nil)
+    def issue_challenge(device_hint: nil, ask: nil, key_purpose: nil)
       body = {}
       body["deviceHint"] = device_hint unless device_hint.nil?
       body["ask"] = Array(ask).map(&:to_s) unless ask.nil? || Array(ask).empty?
-      body["policy"] = policy unless policy.nil?
       body["keyPurpose"] = key_purpose unless key_purpose.nil?
       data = post("/api/v1/attest/challenge", body)
       unless data["challengeId"] && data["nonce"] && data["expiresAt"]
@@ -328,21 +328,21 @@ module RootHerald
     # The verdict is computed by Root Herald and returned here, to the customer's
     # backend — it never travels through the keyless client.
     #
+    # The appraisal runs under the policy pinned on the challenge at mint,
+    # which the server resolved from the API key; nothing here can name a
+    # different one. A +policy+ field in a hand-built body is refused with
+    # 400 policy_bound_to_key.
+    #
     # @param evidence [Hash, Array, String] opaque blob from the client collector; passed through verbatim
     # @param challenge_id [String] the single-use id from #issue_challenge
-    # @param policy [String, nil] tenant policy id/name or a "rootherald:builtin:*"
-    #        name; unknown names fail closed (422). When the challenge was issued
-    #        with a policy this may only name one at least as strict; a looser
-    #        one is refused with PolicyDowngradeError (422 policy_downgrade)
     # @param requested_disclosure_class [String, nil] optional disclosure ceiling
     #        ("verdict" | "pseudonymous" | "derived" | "full"); omitted from the
     #        request body when nil
     # @return [AttestResult]
-    def verify(evidence, challenge_id:, policy: nil, requested_disclosure_class: nil)
+    def verify(evidence, challenge_id:, requested_disclosure_class: nil)
       raise ChallengeError.new(409, "", "verify requires challenge_id (from issue_challenge)") if challenge_id.to_s.empty?
 
       body = { "challengeId" => challenge_id, "evidence" => evidence }
-      body["policy"] = policy unless policy.nil?
       body["requestedDisclosureClass"] = requested_disclosure_class unless requested_disclosure_class.nil?
 
       data = post("/api/v1/attest/verify", body)
@@ -431,8 +431,9 @@ module RootHerald
 
     # Map a non-2xx status to the matching typed error, mirroring
     # @rootherald/node. A 422 is split on the server's +error+ code:
-    # policy_downgrade and admission_refused get their own classes; anything
-    # else is the policy-resolution failure.
+    # admission_refused gets its own class; anything else is the
+    # policy-resolution failure, which is what a 422 meant before admission
+    # refusals existed.
     def map_error(status, body)
       message = nil
       code = nil
@@ -449,11 +450,7 @@ module RootHerald
       klass = case status
               when 401 then InvalidSecretKeyError
               when 422
-                case code
-                when "policy_downgrade" then PolicyDowngradeError
-                when "admission_refused" then AdmissionRefusedError
-                else UnknownPolicyError
-                end
+                code == "admission_refused" ? AdmissionRefusedError : UnknownPolicyError
               when 409 then ChallengeError
               when 400 then InvalidEvidenceError
               when 429 then QuotaExceededError

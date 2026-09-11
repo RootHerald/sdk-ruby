@@ -12,7 +12,7 @@ module RootHerald
     attr_reader :status, :body, :server_error
 
     # @param server_error [String, nil] the server's +error+ discriminator from
-    #   the response body (e.g. "unknown_policy", "policy_downgrade"), or nil
+    #   the response body (e.g. "unknown_policy", "admission_refused"), or nil
     #   when the body carried none
     def initialize(status, body, message = nil, server_error = nil)
       @status = status
@@ -33,20 +33,15 @@ module RootHerald
     def code = "invalid_secret_key"
   end
 
-  # The named policy is unknown or not owned by this tenant (HTTP 422).
+  # A policy bound to the API key no longer exists; nothing is substituted
+  # (HTTP 422, server code "unknown_policy"). Rebind the key from the
+  # dashboard or PUT /api/v1/admin/api-keys/{id}/policies.
   class UnknownPolicyError < HttpError
     def code = "unknown_policy"
   end
 
-  # The verify leg named a policy looser than the one the challenge was issued
-  # with (HTTP 422, server code "policy_downgrade"). A challenge fixes the ask
-  # when it is minted; verify may only tighten it.
-  class PolicyDowngradeError < HttpError
-    def code = "policy_downgrade"
-  end
-
-  # Enrollment was refused because the device can never satisfy the policy
-  # bound to the supplied challenge_id — for example a firmware TPM under a
+  # Enrollment was refused because the device can never satisfy the identity
+  # policy bound to the API key — for example a firmware TPM under a
   # discrete-TPM-only policy (HTTP 422, server code "admission_refused"). The
   # server names the TPM class in the message.
   class AdmissionRefusedError < HttpError
