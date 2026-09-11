@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0
+
+### Breaking
+
+- Policies bind to API keys. The `policy` keyword is gone from
+  `Client#issue_challenge` and `Client#verify`, and the request bodies no
+  longer carry a `policy` field. The server refuses the field with
+  `400 policy_bound_to_key`. Bind a policy to the key from the dashboard or
+  `PUT /api/v1/admin/api-keys/{id}/policies`; the resolved policy is pinned
+  on the challenge at mint.
+- `PolicyDowngradeError` is removed with the field that produced it.
+  `UnknownPolicyError` (422 `unknown_policy`) now means a policy bound to the
+  key no longer exists; nothing is substituted.
+- `Client#relay_enroll(blob, challenge_id: nil)` is unchanged on the wire;
+  admission runs under the identity policy bound to the key, pinned on the
+  challenge when one is passed.
+
 ## 0.4.0
 
 ### Added
