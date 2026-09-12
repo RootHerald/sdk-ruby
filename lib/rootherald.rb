@@ -20,18 +20,17 @@ require_relative "rootherald/client"
 #
 #   # One-time device enroll (relay the client's EnrollBegin/EnrollComplete blobs)
 #   enroll = rh.relay_enroll(enroll_request_blob)
-#   # hand enroll.challenge to the client's EnrollComplete, then:
-#   rh.relay_activate(activation_response)
-#   device_id = enroll.device_id
+#   # hand enroll.challenge.to_wire to the client's EnrollComplete, then:
+#   device_id = rh.relay_activate(activation_response).device_id
 #
 #   # Per-attestation appraisal; the challenge carries the ask
 #   challenge = rh.issue_challenge(ask: %w[identity posture])
-#   result = rh.verify(evidence, challenge_id: challenge.challenge_id)
+#   result = rh.verify(evidence, nonce: challenge.nonce)
 #   proceed_with_signup if result.verdict == :allow
 #
 #   # Ask for a key too, and verify later device signatures locally
 #   challenge = rh.issue_challenge(ask: %w[identity key], key_purpose: "sign")
-#   key = rh.verify(evidence, challenge_id: challenge.challenge_id).key
+#   key = rh.verify(evidence, nonce: challenge.nonce).key
 #   RootHerald::KeySignatures.verify(key.jwk, message, signature)
 module RootHerald
 end

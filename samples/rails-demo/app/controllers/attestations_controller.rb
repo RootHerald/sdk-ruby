@@ -13,21 +13,22 @@ class AttestationsController < ApplicationController
   RH = RootHerald::Client.new(secret_key: ENV.fetch("ROOTHERALD_SECRET_KEY"))
 
   # 1) Mint a challenge that carries the ask — identity, posture and a signing
-  #    key — and hand `challenge` to the client verbatim. What the device must
-  #    prove is fixed here, not at verify time.
+  #    key — and hand `challenge` to the client verbatim. `nonce` is the handle
+  #    the evidence comes back with. What the device must prove is fixed here,
+  #    not at verify time.
   def challenge
     c = RH.issue_challenge(
       ask: [RootHerald::Client::ASK_IDENTITY, RootHerald::Client::ASK_POSTURE, RootHerald::Client::ASK_KEY],
       key_purpose: RootHerald::Client::KEY_PURPOSE_SIGN
     )
-    render json: { challengeId: c.challenge_id, challenge: c.challenge, expiresAt: c.expires_at }
+    render json: { nonce: c.nonce, challenge: c.challenge, expiresAt: c.expires_at }
   end
 
   # 2) The client quoted over the challenge and posts its opaque evidence here
-  #    with the challenge id; appraise it with the rh_sk_ secret key.
+  #    with the nonce; appraise it with the rh_sk_ secret key.
   def create
     result = RH.verify(params.require(:evidence).to_unsafe_h,
-                       challenge_id: params.require(:challengeId))
+                       nonce: params.require(:nonce))
 
     if result.verdict == :allow
       # The key is present only on a pass for a challenge that asked for one.
