@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "cgi"
 require "ipaddr"
 require "json"
 require "time"
@@ -18,6 +17,11 @@ module RootHerald
   #   3. #issue_challenge — POST /api/v1/attest/challenge (a challenge carrying the ask)
   #   4. #verify          — POST /api/v1/attest/verify     (appraise → verdict)
   #
+  # Nothing a client sends locates a row. The server resolves the tenant from
+  # the +rh_sk_+ key, the challenge from the nonce the proof was made over, the
+  # enrollment from the +enrollmentId+ it minted, and the device from the proof
+  # itself. No identifier the server assigns is relayed to a device.
+  #
   # The verdict is computed by Root Herald and returned to the backend — it never
   # travels through the keyless client.
   class Client
@@ -34,9 +38,10 @@ module RootHerald
     KEY_PURPOSE_SIGN = "sign"
 
     # A challenge minted by #issue_challenge. Relay +challenge+ to the client
-    # verbatim; it carries the nonce and the ask the server bound to it.
-    # +challenge+ is nil when the server omitted it.
-    Challenge = Struct.new(:challenge_id, :challenge, :nonce, :expires_at, keyword_init: true)
+    # verbatim; it carries the nonce and the ask the server bound to it. Keep
+    # +nonce+ — the backend's handle for the challenge, the same bytes as the
+    # second segment of +challenge+ — and pass it to #verify.
+    Challenge = Struct.new(:nonce, :challenge, :expires_at, keyword_init: true)
 
     # A TPM-resident signing key the appraisal certified; +AttestResult#key+
     # when the challenge asked for "key" and the verdict passed. +jwk+ is the
@@ -45,11 +50,25 @@ module RootHerald
     # +RootHerald::KeySignatures.verify+.
     CertifiedKey = Struct.new(:key_id, :jwk, :purpose, :auth_policy, :certified_at, keyword_init: true)
 
-    # The MakeCredential challenge — the +201+ response body of
-    # POST /api/v1/attest/enroll. +credential_blob+ / +encrypted_secret+ are the
-    # TPM2_MakeCredential outputs the client feeds into TPM2_ActivateCredential
-    # (its +EnrollComplete+ leg).
-    EnrollChallenge = Struct.new(:device_id, :credential_blob, :encrypted_secret, keyword_init: true)
+    # The activation challenge — the +201+ response body of
+    # POST /api/v1/attest/enroll, handed to the client's +EnrollComplete+ leg.
+    # A TPM device gets +credential_blob+ / +encrypted_secret+ (the
+    # TPM2_MakeCredential outputs it feeds into TPM2_ActivateCredential); a
+    # macOS device gets +challenge_nonce+ to sign. +enrollment_id+ names the
+    # open enrollment and comes back in the activation blob.
+    EnrollChallenge = Struct.new(:enrollment_id, :credential_blob, :encrypted_secret, :challenge_nonce,
+                                 keyword_init: true) do
+      # @return [Hash] the +201+ body in wire shape (camelCase keys, absent
+      #   fields omitted), ready to relay to the client's +EnrollComplete+
+      def to_wire
+        {
+          "enrollmentId" => enrollment_id,
+          "credentialBlob" => credential_blob,
+          "encryptedSecret" => encrypted_secret,
+          "challengeNonce" => challenge_nonce
+        }.compact
+      end
+    end
 
     # Result of the enroll-relay leg (#relay_enroll), mirroring
     # @rootherald/node's +RelayEnrollResult+.
@@ -59,15 +78,15 @@ module RootHerald
     # short-circuiting it would make rotation impossible. Relay +challenge+ to
     # the client's +EnrollComplete+, then call #relay_activate.
     #
-    # +device_id+ is THIS tenant's alias for the device, not a global identifier:
-    # another tenant enrolling the same silicon is told a different one.
-    # +challenge_id+ is the attestation challenge the enrollment was admitted
-    # against, when the server echoed one; nil otherwise.
-    RelayEnrollResult = Struct.new(:device_id, :challenge, :challenge_id, keyword_init: true)
+    # +challenge+ is nil for an iOS enrollment: its +201+ body is empty and
+    # nothing goes back to the device. The backend learns its alias for the
+    # device from #relay_activate (TPM, macOS) or from the first verdict (iOS).
+    RelayEnrollResult = Struct.new(:challenge, keyword_init: true)
 
     # The terminal response of the activate-relay leg (#relay_activate) —
     # POST /api/v1/attest/activate. +device_id+ is the load-bearing field the
-    # backend maps to its user.
+    # backend maps to its user. It is this tenant's alias for the device, not a
+    # global identifier, and must not be relayed to the device.
     ActivateResult = Struct.new(:device_id, :status, :enrolled_at, keyword_init: true)
 
     # The result of #verify: the device verdict and the full verdict data.
@@ -203,81 +222,72 @@ module RootHerald
     # The client never holds the +rh_sk_+ key and never talks to Root Herald;
     # this backend helper is the only thing that does.
     #
-    # Admission runs under the identity policy bound to the API key, pinned on
-    # the challenge when a live +challenge_id+ from #issue_challenge is given;
-    # a device that could never satisfy it is refused before it gets an AK
+    # Admission runs under the identity policy bound to the API key; a device
+    # that could never satisfy it is refused before it gets an AK
     # (AdmissionRefusedError, 422 admission_refused).
     #
     # @param enroll_request_blob [Hash] the opaque +EnrollBegin()+ blob from the
-    #        client, relayed verbatim. Wire shape (camelCase keys): +ekPublicKey+,
-    #        +akPublicArea+ (required), +platform+, +ekCertPem+,
-    #        +ekCertificateChain+. String or symbol keys are accepted.
-    # @param challenge_id [String, nil] sent as the +challengeId+ query
-    #        parameter; omitted when nil
+    #        client, relayed verbatim. Wire shape (camelCase keys), discriminated
+    #        by +platform+: a TPM or macOS blob carries +ekPublicKey+ and
+    #        +akPublicArea+; an iOS blob carries +iosKeyId+,
+    #        +iosAttestationObject+ and +nonce+. String or symbol keys are
+    #        accepted.
     # @return [RelayEnrollResult]
-    # @raise [ArgumentError] if the blob lacks ekPublicKey/akPublicArea
-    def relay_enroll(enroll_request_blob = nil, challenge_id: nil, **symbol_keyed_blob)
-      # A braceless symbol-keyed blob (+relay_enroll(ekPublicKey: ..., ...)+)
-      # arrives as keywords now that the method has one of its own.
-      enroll_request_blob = symbol_keyed_blob if enroll_request_blob.nil?
-      ek = blob_field(enroll_request_blob, "ekPublicKey")
-      ak = blob_field(enroll_request_blob, "akPublicArea")
-      unless ek.is_a?(String) && ak.is_a?(String)
-        raise ArgumentError,
-              "relay_enroll requires an enroll request blob with ekPublicKey and akPublicArea"
+    # @raise [ArgumentError] if the blob lacks the fields its platform requires
+    def relay_enroll(enroll_request_blob)
+      ios = blob_field(enroll_request_blob, "platform") == "ios"
+      required = ios ? %w[iosKeyId iosAttestationObject nonce] : %w[ekPublicKey akPublicArea]
+      unless required.all? { |k| blob_field(enroll_request_blob, k).is_a?(String) }
+        raise ArgumentError, "relay_enroll requires an enroll request blob with #{required.join('/')}"
       end
 
-      path = "/api/v1/attest/enroll"
-      path += "?challengeId=#{CGI.escape(challenge_id)}" unless challenge_id.nil? || challenge_id.empty?
-      status, body = raw_post(path, enroll_request_blob)
-
+      status, body = raw_post("/api/v1/attest/enroll", enroll_request_blob)
       raise map_error(status, body) if status >= 400
 
       data = parse_object(status, body)
-      device_id = data["deviceId"]
-      credential_blob = data["credentialBlob"]
-      encrypted_secret = data["encryptedSecret"]
-      unless device_id.is_a?(String) && credential_blob.is_a?(String) && encrypted_secret.is_a?(String)
-        raise HttpError.new(status, body, "enroll response missing deviceId/credentialBlob/encryptedSecret")
+      return RelayEnrollResult.new(challenge: nil) if ios && data.empty?
+
+      challenge = EnrollChallenge.new(
+        enrollment_id: data["enrollmentId"],
+        credential_blob: data["credentialBlob"],
+        encrypted_secret: data["encryptedSecret"],
+        challenge_nonce: data["challengeNonce"]
+      )
+      tpm = challenge.credential_blob.is_a?(String) && challenge.encrypted_secret.is_a?(String)
+      macos = challenge.challenge_nonce.is_a?(String)
+      unless challenge.enrollment_id.is_a?(String) && (tpm || macos)
+        raise HttpError.new(status, body,
+                            "enroll response missing enrollmentId with credentialBlob/encryptedSecret or challengeNonce")
       end
 
-      RelayEnrollResult.new(
-        device_id: device_id,
-        challenge: EnrollChallenge.new(
-          device_id: device_id,
-          credential_blob: credential_blob,
-          encrypted_secret: encrypted_secret
-        ),
-        challenge_id: data["challengeId"].is_a?(String) ? data["challengeId"] : nil
-      )
+      RelayEnrollResult.new(challenge: challenge)
     end
 
     # Enroll relay — leg 2. POST /api/v1/attest/activate.
     #
-    # Relays the client's +EnrollComplete()+ blob (the decrypted credential
-    # secret) to Root Herald, completing the EK→AK credential-activation
-    # handshake, with the blob the client produced from #relay_enroll's challenge.
+    # Relays the client's +EnrollComplete()+ blob to Root Herald, completing
+    # the activation handshake for the enrollment #relay_enroll opened.
     #
     # @param activation_response [Hash] the opaque +EnrollComplete()+ blob,
-    #        relayed verbatim. Wire shape (camelCase keys): +deviceId+,
-    #        +decryptedSecret+ (required), +akPublicKey+ (optional). String or
-    #        symbol keys are accepted.
+    #        relayed verbatim. Wire shape (camelCase keys): +enrollmentId+ plus
+    #        +decryptedSecret+ (TPM) or +signature+ (macOS). String or symbol
+    #        keys are accepted.
     # @return [ActivateResult] +device_id+ is the load-bearing field
-    # @raise [ArgumentError] if the blob lacks deviceId/decryptedSecret
+    # @raise [ArgumentError] if the blob lacks enrollmentId or a proof
     def relay_activate(activation_response)
-      device_id = blob_field(activation_response, "deviceId")
-      decrypted_secret = blob_field(activation_response, "decryptedSecret")
-      unless device_id.is_a?(String) && !device_id.empty? && decrypted_secret.is_a?(String)
+      enrollment_id = blob_field(activation_response, "enrollmentId")
+      proof = %w[decryptedSecret signature].any? { |k| blob_field(activation_response, k).is_a?(String) }
+      unless enrollment_id.is_a?(String) && !enrollment_id.empty? && proof
         raise ArgumentError,
-              "relay_activate requires an activation response with deviceId and decryptedSecret"
+              "relay_activate requires an activation response with enrollmentId and decryptedSecret or signature"
       end
 
       data = post("/api/v1/attest/activate", activation_response)
-      out_device_id = data["deviceId"]
-      raise HttpError.new(200, data.to_json, "activate response missing deviceId") unless out_device_id.is_a?(String)
+      device_id = data["deviceId"]
+      raise HttpError.new(200, data.to_json, "activate response missing deviceId") unless device_id.is_a?(String)
 
       ActivateResult.new(
-        device_id: out_device_id,
+        device_id: device_id,
         status: data["status"].is_a?(String) ? data["status"] : nil,
         enrolled_at: data["enrolledAt"].is_a?(String) ? data["enrolledAt"] : nil
       )
@@ -285,8 +295,7 @@ module RootHerald
 
     # POST /api/v1/attest/challenge — mint a challenge that carries the ask.
     # Relay +challenge.challenge+ to the client verbatim; it quotes over it,
-    # then submit the resulting evidence with #verify using the returned
-    # challenge_id.
+    # then submit the resulting evidence with #verify using the returned nonce.
     #
     # What the device must prove is fixed here, not at verify time. Policies
     # bind to the API key (an identity policy and, on Pro, a posture policy);
@@ -306,14 +315,13 @@ module RootHerald
       body["ask"] = Array(ask).map(&:to_s) unless ask.nil? || Array(ask).empty?
       body["keyPurpose"] = key_purpose unless key_purpose.nil?
       data = post("/api/v1/attest/challenge", body)
-      unless data["challengeId"] && data["nonce"] && data["expiresAt"]
-        raise HttpError.new(200, data.to_json, "challenge response missing challengeId/nonce/expiresAt")
+      unless %w[nonce challenge expiresAt].all? { |k| data[k].is_a?(String) }
+        raise HttpError.new(200, data.to_json, "challenge response missing nonce/challenge/expiresAt")
       end
 
       Challenge.new(
-        challenge_id: data["challengeId"],
-        challenge: data["challenge"].is_a?(String) ? data["challenge"] : nil,
         nonce: data["nonce"],
+        challenge: data["challenge"],
         expires_at: data["expiresAt"]
       )
     end
@@ -334,15 +342,15 @@ module RootHerald
     # 400 policy_bound_to_key.
     #
     # @param evidence [Hash, Array, String] opaque blob from the client collector; passed through verbatim
-    # @param challenge_id [String] the single-use id from #issue_challenge
+    # @param nonce [String] the single-use handle from #issue_challenge
     # @param requested_disclosure_class [String, nil] optional disclosure ceiling
     #        ("verdict" | "pseudonymous" | "derived" | "full"); omitted from the
     #        request body when nil
     # @return [AttestResult]
-    def verify(evidence, challenge_id:, requested_disclosure_class: nil)
-      raise ChallengeError.new(409, "", "verify requires challenge_id (from issue_challenge)") if challenge_id.to_s.empty?
+    def verify(evidence, nonce:, requested_disclosure_class: nil)
+      raise ChallengeError.new(409, "", "verify requires nonce (from issue_challenge)") if nonce.to_s.empty?
 
-      body = { "challengeId" => challenge_id, "evidence" => evidence }
+      body = { "nonce" => nonce, "evidence" => evidence }
       body["requestedDisclosureClass"] = requested_disclosure_class unless requested_disclosure_class.nil?
 
       data = post("/api/v1/attest/verify", body)
@@ -395,7 +403,7 @@ module RootHerald
     end
 
     # Authenticated JSON POST returning +[status, body]+ verbatim, leaving status
-    # interpretation to the caller. +path+ may carry a query string.
+    # interpretation to the caller.
     def raw_post(path, body)
       url = "#{@base_url}#{path}"
       headers = {

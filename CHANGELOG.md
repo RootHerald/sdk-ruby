@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.0
+
+### Breaking
+
+- Wire 7.0: nothing a client sends locates a row. `Challenge` is `nonce` /
+  `challenge` / `expires_at`; `challenge_id` is gone. `Client#verify` takes
+  `nonce:` (the handle from `issue_challenge`, the second segment of the
+  challenge string) and sends it as `nonce`; a missing one raises
+  `ChallengeError` as a missing `challenge_id` did.
+- `Client#relay_enroll(blob)` takes no `challenge_id:` and sends no query
+  string. It returns `RelayEnrollResult#challenge` only: an `EnrollChallenge`
+  of `enrollment_id` plus `credential_blob` / `encrypted_secret` (TPM) or
+  `challenge_nonce` (macOS), whose `#to_wire` is the camelCase body to hand to
+  the client's `EnrollComplete`. `RelayEnrollResult#device_id` and
+  `#challenge_id` are gone; the alias comes from `relay_activate`. An iOS blob
+  (`platform: "ios"` with `iosKeyId` / `iosAttestationObject` / `nonce`) is
+  accepted and its empty `201` yields `challenge: nil`.
+- `Client#relay_activate` requires `enrollmentId` plus `decryptedSecret` (TPM)
+  or `signature` (macOS); `deviceId` and `akPublicKey` are no longer read.
+  `ActivateResult` is unchanged.
+
 ## 0.5.0
 
 ### Breaking

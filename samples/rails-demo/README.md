@@ -31,13 +31,13 @@ class AttestationsController < ApplicationController
   # 1) Mint a challenge that carries the ask; relay `challenge` to the client.
   def challenge
     c = RH.issue_challenge(ask: %w[identity posture key], key_purpose: "sign")
-    render json: { challengeId: c.challenge_id, challenge: c.challenge, expiresAt: c.expires_at }
+    render json: { nonce: c.nonce, challenge: c.challenge, expiresAt: c.expires_at }
   end
 
   # 2) Appraise the evidence the client produced; keep the certified key on a pass.
   def create
     result = RH.verify(params.require(:evidence).to_unsafe_h,
-                       challenge_id: params.require(:challengeId))
+                       nonce: params.require(:nonce))
 
     if result.verdict == :allow
       key = result.key # present only on a pass for a challenge that asked for one
