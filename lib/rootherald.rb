@@ -26,7 +26,7 @@ require_relative "rootherald/client"
 #   # Per-attestation appraisal; the challenge carries the ask
 #   challenge = rh.issue_challenge(ask: %w[identity posture])
 #   result = rh.verify(evidence, nonce: challenge.nonce)
-#   proceed_with_signup if result.verdict == :allow
+#   proceed_with_signup if result.verdict == :pass
 #
 #   # Ask for a key too, and verify later device signatures locally
 #   challenge = rh.issue_challenge(ask: %w[identity key], key_purpose: "sign")

@@ -27,6 +27,10 @@ module RootHerald
   class Client
     DEFAULT_BASE_URL = "https://rootherald.io"
     SECRET_KEY_PREFIX = "rh_sk_"
+    # Per-request timeout in seconds, the same in every Root Herald server SDK.
+    DEFAULT_TIMEOUT_SECONDS = 30.0
+    # Marks a 429 as the metered quota, whatever the body says.
+    QUOTA_HEADER = "x-rootherald-quota"
 
     # Ask: prove which enrolled device this is.
     ASK_IDENTITY = "identity"
@@ -46,7 +50,8 @@ module RootHerald
     # A TPM-resident signing key the appraisal certified; +AttestResult#key+
     # when the challenge asked for "key" and the verdict passed. +jwk+ is the
     # public key as a Hash (kty "EC", crv "P-256" | "P-384", base64url x / y);
-    # +certified_at+ is a Time. Verify later device signatures with
+    # +auth_policy+ is the hex authPolicy digest from the key's public area,
+    # or nil; +certified_at+ is a Time. Verify later device signatures with
     # +RootHerald::KeySignatures.verify+.
     CertifiedKey = Struct.new(:key_id, :jwk, :purpose, :auth_policy, :certified_at, keyword_init: true)
 
@@ -94,8 +99,9 @@ module RootHerald
     # +assurance_claims_met+ / +enrollment_required+ mirror @rootherald/node:
     # the top-level +assuranceClaimsMet+ (satisfied assurance URNs) and
     # +enrollment_required+ (the attest-first / enroll-on-miss signal).
-    # +key+ is the CertifiedKey from the top-level +key+, present only on a
-    # passing verdict for a challenge that asked for "key"; nil otherwise.
+    # +key+ is the CertifiedKey from the top-level +key+, passed through as the
+    # server sent it; the server sends one only on a passing verdict for a
+    # challenge that asked for "key". nil otherwise.
     #
     # The cohort accessors expose the ADDITIVE, advisory-only cohort fields the
     # server populates on +verdict_data["device"]+ (camelCase keys) when a
@@ -152,13 +158,15 @@ module RootHerald
 
     # @param secret_key [String] your Root Herald secret key (rh_sk_…); required
     # @param base_url [String]
-    # @param timeout_seconds [Float]
+    # @param timeout_seconds [Float] per-request timeout; default DEFAULT_TIMEOUT_SECONDS
     # @param http_transport [#call, nil] callable taking
-    #        +(method, url, headers, body)+ and returning +{status:, body:}+
+    #        +(method, url, headers, body)+ and returning
+    #        +{status:, body:, headers:}+; +headers+ is optional, a Hash of
+    #        response header name (lowercased) to value
     # @raise [ArgumentError] if the key is empty, is not an rh_sk_ key, or the
     #   base URL is not https (loopback excepted)
     def initialize(secret_key:, base_url: DEFAULT_BASE_URL,
-                   timeout_seconds: 10.0, http_transport: nil)
+                   timeout_seconds: DEFAULT_TIMEOUT_SECONDS, http_transport: nil)
       raise ArgumentError, "a secret key (rh_sk_…) is required" if secret_key.nil? || secret_key.empty?
       unless secret_key.start_with?(SECRET_KEY_PREFIX)
         raise ArgumentError,
@@ -241,8 +249,8 @@ module RootHerald
         raise ArgumentError, "relay_enroll requires an enroll request blob with #{required.join('/')}"
       end
 
-      status, body = raw_post("/api/v1/attest/enroll", enroll_request_blob)
-      raise map_error(status, body) if status >= 400
+      status, body, headers = raw_post("/api/v1/attest/enroll", enroll_request_blob)
+      raise map_error(status, body, headers) if status >= 400
 
       data = parse_object(status, body)
       return RelayEnrollResult.new(challenge: nil) if ios && data.empty?
@@ -330,8 +338,9 @@ module RootHerald
     # server-side appraisal and return the verdict.
     #
     # An un-enrolled / failing device is NOT an error — it returns a normal
-    # AttestResult carrying +:deny+/+:warn+. Only protocol/auth/quota problems
-    # raise.
+    # AttestResult carrying +:fail+/+:warn+. Only protocol/auth/quota problems
+    # raise; a response whose verdict token is not one of pass/warn/fail is
+    # one too (HttpError).
     #
     # The verdict is computed by Root Herald and returned here, to the customer's
     # backend — it never travels through the keyless client.
@@ -347,8 +356,9 @@ module RootHerald
     #        ("verdict" | "pseudonymous" | "derived" | "full"); omitted from the
     #        request body when nil
     # @return [AttestResult]
+    # @raise [ArgumentError] if the nonce is empty; no request is made
     def verify(evidence, nonce:, requested_disclosure_class: nil)
-      raise ChallengeError.new(409, "", "verify requires nonce (from issue_challenge)") if nonce.to_s.empty?
+      raise ArgumentError, "verify requires nonce (from issue_challenge)" if nonce.to_s.empty?
 
       body = { "nonce" => nonce, "evidence" => evidence }
       body["requestedDisclosureClass"] = requested_disclosure_class unless requested_disclosure_class.nil?
@@ -358,13 +368,18 @@ module RootHerald
       raise HttpError.new(200, data.to_json, "verify response missing verdict") unless verdict_data.is_a?(Hash)
 
       device = verdict_data["device"].is_a?(Hash) ? verdict_data["device"] : {}
+      verdict = Verdict.from_raw(device["verdict"])
+      if verdict.nil?
+        raise HttpError.new(200, data.to_json,
+                            "verify response verdict.device.verdict is not pass/warn/fail (got #{device['verdict'].inspect})")
+      end
+
       AttestResult.new(
-        verdict: Verdict.from_raw(device["verdict"]),
+        verdict: verdict,
         verdict_data: verdict_data,
         assurance_claims_met: data["assuranceClaimsMet"].is_a?(Array) ? data["assuranceClaimsMet"] : [],
         enrollment_required: data["enrollmentRequired"] == true,
-        # `key` is a top-level sibling too, present only on a passing verdict
-        # for a challenge that asked for a key.
+        # `key` is a top-level sibling too, passed through as the server sent it.
         key: data["key"].nil? ? nil : parse_certified_key(data)
       )
     end
@@ -396,14 +411,14 @@ module RootHerald
 
     # Authenticated JSON POST; maps non-2xx to a typed error and parses the body.
     def post(path, body)
-      status, resp_body = raw_post(path, body)
-      raise map_error(status, resp_body) if status >= 400
+      status, resp_body, resp_headers = raw_post(path, body)
+      raise map_error(status, resp_body, resp_headers) if status >= 400
 
       parse_object(status, resp_body)
     end
 
-    # Authenticated JSON POST returning +[status, body]+ verbatim, leaving status
-    # interpretation to the caller.
+    # Authenticated JSON POST returning +[status, body, headers]+ verbatim
+    # (header names lowercased), leaving status interpretation to the caller.
     def raw_post(path, body)
       url = "#{@base_url}#{path}"
       headers = {
@@ -412,7 +427,9 @@ module RootHerald
         "Accept" => "application/json"
       }
       resp = @http_transport.call(:post, url, headers, JSON.generate(body))
-      [resp[:status] || resp["status"], (resp[:body] || resp["body"] || "").to_s]
+      resp_headers = resp[:headers] || resp["headers"]
+      resp_headers = resp_headers.is_a?(Hash) ? resp_headers.to_h { |k, v| [k.to_s.downcase, v.to_s] } : {}
+      [resp[:status] || resp["status"], (resp[:body] || resp["body"] || "").to_s, resp_headers]
     end
 
     # Parse a 2xx response body into a Hash. An empty/204 body is +{}+; a non-Hash
@@ -437,34 +454,47 @@ module RootHerald
       blob.key?(key) ? blob[key] : blob[key.to_sym]
     end
 
-    # Map a non-2xx status to the matching typed error, mirroring
-    # @rootherald/node. A 422 is split on the server's +error+ code:
-    # admission_refused gets its own class; anything else is the
-    # policy-resolution failure, which is what a 422 meant before admission
-    # refusals existed.
-    def map_error(status, body)
+    # Map a non-2xx response to the matching typed error, mirroring
+    # @rootherald/node. Where one status carries two refusals the server's
+    # +error+ code (or a header) tells them apart; a code no class covers
+    # stays a plain HttpError with +server_error+ preserved.
+    def map_error(status, body, headers = {})
       message = nil
       code = nil
+      retry_after = nil
       begin
         parsed = JSON.parse(body)
         if parsed.is_a?(Hash)
           message = %w[message detail error_description].map { |f| parsed[f] }.find { |v| v.is_a?(String) }
           code = [parsed["error"], parsed["code"]].find { |v| v.is_a?(String) }
+          retry_after = parsed["retryAfterSeconds"] if parsed["retryAfterSeconds"].is_a?(Integer)
         end
       rescue JSON::ParserError
         # non-JSON body; fall through to status-based message
       end
+      header_retry = headers["retry-after"].to_s.strip
+      retry_after = Integer(header_retry, 10) if header_retry.match?(/\A\d+\z/)
 
-      klass = case status
-              when 401 then InvalidSecretKeyError
-              when 422
-                code == "admission_refused" ? AdmissionRefusedError : UnknownPolicyError
-              when 409 then ChallengeError
-              when 400 then InvalidEvidenceError
-              when 429 then QuotaExceededError
-              else HttpError
-              end
-      klass.new(status, body, message, code)
+      case status
+      when 401
+        (code == "activation_refused" ? ActivationRefusedError : InvalidSecretKeyError).new(status, body, message, code)
+      when 422
+        klass = case code
+                when "admission_refused" then AdmissionRefusedError
+                when "unknown_policy", nil then UnknownPolicyError
+                else HttpError
+                end
+        klass.new(status, body, message, code)
+      when 409 then ChallengeError.new(status, body, message, code)
+      when 400 then InvalidEvidenceError.new(status, body, message, code)
+      when 429
+        if code == "quota_exceeded" || headers.key?(QUOTA_HEADER)
+          QuotaExceededError.new(status, body, message, code)
+        else
+          RateLimitedError.new(status, body, message, code, retry_after)
+        end
+      else HttpError.new(status, body, message, code)
+      end
     end
 
     def build_default_transport
@@ -474,7 +504,7 @@ module RootHerald
       end
       lambda do |method, url, headers, body|
         resp = conn.run_request(method, url, body, headers)
-        { status: resp.status, body: resp.body.to_s }
+        { status: resp.status, body: resp.body.to_s, headers: resp.headers.to_h }
       end
     end
   end

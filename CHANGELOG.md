@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- `Verdict` is the server's own token: `:pass` / `:warn` / `:fail`
+  (`Verdict::PASS` / `WARN` / `FAIL`) replace `:allow` / `:warn` / `:deny`,
+  the same vocabulary as every other Root Herald SDK. `Verdict.from_raw`
+  returns nil for any other token and `Client#verify` then raises
+  `HttpError` instead of reading it as `:warn`; `Verdict.from_ear_status` is
+  removed.
+- `AttestResult#key` is passed through as the server sent it; the server
+  withholds it when it must.
+- An empty `nonce:` on `Client#verify` raises `ArgumentError`, not
+  `ChallengeError`; no request is made.
+- A 401 carrying `activation_refused` is `ActivationRefusedError`, not
+  `InvalidSecretKeyError`. A 429 without `quota_exceeded` or an
+  `X-RootHerald-Quota` header is `RateLimitedError`, with
+  `retry_after_seconds`, not `QuotaExceededError`. A 422 whose code is
+  neither `unknown_policy` nor `admission_refused` (`posture_not_bound`) is
+  a plain `HttpError` with the code preserved.
+- The default timeout is 30 s (`Client::DEFAULT_TIMEOUT_SECONDS`), was 10 s.
+- An `http_transport` may return `headers:` alongside `status:` and `body:`;
+  the built-in Faraday transport does.
+- `CertifiedKey#auth_policy` is documented as hex, which is what the server
+  sends.
+
 ## 0.6.0
 
 ### Breaking
