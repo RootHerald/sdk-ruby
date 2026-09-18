@@ -39,7 +39,7 @@ class AttestationsController < ApplicationController
     result = RH.verify(params.require(:evidence).to_unsafe_h,
                        nonce: params.require(:nonce))
 
-    if result.verdict == :allow
+    if result.verdict == :pass
       key = result.key # present only on a pass for a challenge that asked for one
       Rails.cache.write("rootherald:key:#{key.key_id}", key.jwk) if key
       render json: { ok: true, verdict: result.verdict, keyId: key&.key_id }

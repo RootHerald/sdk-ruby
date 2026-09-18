@@ -30,7 +30,7 @@ class AttestationsController < ApplicationController
     result = RH.verify(params.require(:evidence).to_unsafe_h,
                        nonce: params.require(:nonce))
 
-    if result.verdict == :allow
+    if result.verdict == :pass
       # The key is present only on a pass for a challenge that asked for one.
       # A real app stores it against the user; the Rails cache stands in here.
       key = result.key

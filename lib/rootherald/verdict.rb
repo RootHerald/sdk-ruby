@@ -1,36 +1,29 @@
 # frozen_string_literal: true
 
 module RootHerald
-  # Friendly tri-state verdict mapped from the EAR status carried in the
-  # attestation token. Exposed as symbols (+:allow+, +:warn+, +:deny+) for
-  # idiomatic Ruby pattern matching.
+  # The verdict values the server emits at +verdict.device.verdict+, as
+  # +AttestResult#verdict+ returns them: symbols +:pass+, +:warn+, +:fail+,
+  # the same vocabulary in every Root Herald SDK. A response carrying any
+  # other token is refused.
   module Verdict
-    ALLOW = :allow
+    # The device satisfied the policy.
+    PASS = :pass
+    # The device passed with reduced assurance; the policy says whether to proceed.
     WARN = :warn
-    DENY = :deny
+    # The device did not satisfy the policy, or is not enrolled (see
+    # +AttestResult#enrollment_required+).
+    FAIL = :fail
 
-    # @param ear_status [String, nil]
-    # @return [Symbol] one of +:allow+, +:warn+, +:deny+
-    def self.from_ear_status(ear_status)
-      case ear_status
-      when "affirming" then ALLOW
-      when "contraindicated" then DENY
-      else WARN
-      end
-    end
-
-    # Map the device verdict token the verify endpoint emits at
-    # +verdict.device.verdict+ ("pass"/"fail"/"warn") to the SDK symbol.
-    # Unknown/missing values map to +:warn+ (fail-closed: never silently
-    # +:allow+).
+    # Read the +verdict.device.verdict+ token. Anything outside the three
+    # values the server emits is nil, never a guessed verdict.
     #
     # @param raw [String, nil]
-    # @return [Symbol] one of +:allow+, +:warn+, +:deny+
+    # @return [Symbol, nil] one of +:pass+, +:warn+, +:fail+
     def self.from_raw(raw)
-      case raw.to_s.strip.downcase
-      when "pass", "allow", "affirming" then ALLOW
-      when "fail", "deny", "contraindicated" then DENY
-      else WARN
+      case raw
+      when "pass" then PASS
+      when "warn" then WARN
+      when "fail" then FAIL
       end
     end
   end

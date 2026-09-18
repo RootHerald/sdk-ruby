@@ -35,7 +35,7 @@ challenge = rh.issue_challenge(ask: %w[identity posture]) # the default when omi
 result = rh.verify(evidence, nonce: challenge.nonce,
                    requested_disclosure_class: "pseudonymous")     # optional ceiling
 
-proceed_with_signup if result.verdict == :allow
+proceed_with_signup if result.verdict == :pass
 
 result.assurance_claims_met  # => ["urn:rootherald:assurance:…"] satisfied assurance URNs
 result.enrollment_required   # => true when the device must enroll first (attest-first)
@@ -90,12 +90,43 @@ and stays on your server: it is never relayed to the device. An iOS blob
 (`platform: "ios"`) enrolls in one leg; its `201` is empty, `enroll.challenge`
 is `nil`, and the alias arrives with the first verdict as `verdict.device.ueid`.
 
-An un-enrolled / failing device is a verdict (`:deny`/`:warn`), **not** an
-error. Only protocol/auth/quota problems raise: `InvalidSecretKeyError` (401),
-`UnknownPolicyError` / `AdmissionRefusedError` (422, told apart by
-`server_error`; `unknown_policy` means a policy bound to the key no longer
-exists), `ChallengeError` (409), `InvalidEvidenceError` (400),
-`QuotaExceededError` (429).
+`result.verdict` is the server's own token, `:pass` / `:warn` / `:fail`
+(`RootHerald::Verdict::PASS` / `WARN` / `FAIL`, the same vocabulary in every
+Root Herald SDK). A response carrying any other token is refused with
+`HttpError`, never a guessed verdict.
+
+## Errors
+
+An un-enrolled / failing device is a verdict (`:fail`/`:warn`), **not** an
+error. Only protocol, auth and quota problems raise, each exposing `status`
+and the server's `server_error`:
+
+| Status | Server `error` code                                 | Error                    |
+| ------ | --------------------------------------------------- | ------------------------ |
+| 401    | `activation_refused`                                | `ActivationRefusedError` |
+| 401    | anything else                                       | `InvalidSecretKeyError`  |
+| 400    |                                                     | `InvalidEvidenceError`   |
+| 409    |                                                     | `ChallengeError`         |
+| 422    | `unknown_policy`, or none                           | `UnknownPolicyError`     |
+| 422    | `admission_refused`                                 | `AdmissionRefusedError`  |
+| 429    | `quota_exceeded`, or an `X-RootHerald-Quota` header | `QuotaExceededError`     |
+| 429    | anything else                                       | `RateLimitedError`       |
+
+`ActivationRefusedError` is `relay_activate` being refused for an unknown,
+spent or foreign `enrollmentId` or a wrong proof; the secret key was accepted.
+`RateLimitedError#retry_after_seconds` is the server's `Retry-After` (else the
+body's `retryAfterSeconds`, else nil); `QuotaExceededError` is the metered
+billing ceiling. `UnknownPolicyError` means a policy bound to the key no
+longer exists. Any other status, and a 422 or 402 carrying a code no class
+covers (`posture_not_bound`, `plan_lapsed`), is a plain `HttpError` with
+`server_error` preserved. Input the SDK refuses locally, such as an empty
+nonce, is `ArgumentError` and makes no request.
+
+Every request times out after 30 s (`RootHerald::Client::DEFAULT_TIMEOUT_SECONDS`,
+the `timeout_seconds:` argument). The default is the same in every Root Herald
+server SDK. A custom `http_transport` may return `headers:` (response header
+name to value) so the 429 split can read `Retry-After` and
+`X-RootHerald-Quota`; the built-in Faraday transport does.
 
 ## Rails
 

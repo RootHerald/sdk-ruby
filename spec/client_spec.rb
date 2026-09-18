@@ -140,7 +140,7 @@ RSpec.describe RootHerald::Client do
   it "verify exposes the certified key from the response root" do
     c = bg(->(*_args) { { status: 200, body: JSON.generate(passing_verdict_with_key) } })
     result = c.verify({}, nonce: "n_1")
-    expect(result.verdict).to eq(:allow)
+    expect(result.verdict).to eq(:pass)
     key = result.key
     expect(key).to be_a(RootHerald::Client::CertifiedKey)
     expect(key.key_id).to eq("key_1")
@@ -218,7 +218,7 @@ RSpec.describe RootHerald::Client do
       ) }
     })
     result = c.verify({ "quote" => "..." }, nonce: "n_1")
-    expect(result.verdict).to eq(:allow)
+    expect(result.verdict).to eq(:pass)
     expect(result.assurance_claims_met).to eq(["urn:rootherald:assurance:hardware-backed"])
     expect(result.enrollment_required).to be(false)
     expect(seen[:body]["nonce"]).to eq("n_1")
@@ -263,19 +263,22 @@ RSpec.describe RootHerald::Client do
   it "treats a fail verdict as a verdict, not an error" do
     c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "fail" } }) } })
     result = c.verify({}, nonce: "n_1")
-    expect(result.verdict).to eq(:deny)
+    expect(result.verdict).to eq(:fail)
   end
 
   {
-    401 => RootHerald::InvalidSecretKeyError,
-    422 => RootHerald::UnknownPolicyError,
-    409 => RootHerald::ChallengeError,
-    400 => RootHerald::InvalidEvidenceError,
-    429 => RootHerald::QuotaExceededError
-  }.each do |status, klass|
-    it "maps HTTP #{status} to #{klass}" do
-      c = bg(->(*_args) { { status: status, body: '{"error":"x","message":"boom"}' } })
-      expect { c.verify({}, nonce: "n_1") }.to raise_error(klass)
+    [401, "invalid_secret_key"] => RootHerald::InvalidSecretKeyError,
+    [401, "activation_refused"] => RootHerald::ActivationRefusedError,
+    [422, "unknown_policy"] => RootHerald::UnknownPolicyError,
+    [422, "admission_refused"] => RootHerald::AdmissionRefusedError,
+    [409, "x"] => RootHerald::ChallengeError,
+    [400, "x"] => RootHerald::InvalidEvidenceError,
+    [429, "quota_exceeded"] => RootHerald::QuotaExceededError,
+    [429, "rate_limited"] => RootHerald::RateLimitedError
+  }.each do |(status, code), klass|
+    it "maps HTTP #{status} #{code} to #{klass}" do
+      c = bg(->(*_args) { { status: status, body: JSON.generate("error" => code, "message" => "boom") } })
+      expect { c.verify({}, nonce: "n_1") }.to raise_error(klass) { |e| expect(e.server_error).to eq(code) }
     end
   end
 
@@ -308,7 +311,7 @@ RSpec.describe RootHerald::Client do
       ) }
     })
     result = c.verify({ "quote" => "..." }, nonce: "n_1")
-    expect(result.verdict).to eq(:allow)
+    expect(result.verdict).to eq(:pass)
     expect(seen[:url]).to end_with("/api/v1/attest/verify")
     expect(seen[:body]["nonce"]).to eq("n_1")
     expect(seen[:body]["evidence"]["quote"]).to eq("...")
@@ -338,15 +341,93 @@ RSpec.describe RootHerald::Client do
       ) }
     })
     result = c.verify({}, nonce: "n_1")
-    expect(result.verdict).to eq(:deny)
+    expect(result.verdict).to eq(:fail)
     expect(result.enrollment_required).to be(true)
   end
 
-  it "verify requires a nonce" do
+  it "verify requires a nonce, as a local argument error" do
     c = bg(->(*_args) { raise "should not be called" })
-    expect { c.verify({}, nonce: "") }.to raise_error(RootHerald::ChallengeError, /nonce/)
-    expect { c.verify({}, nonce: nil) }.to raise_error(RootHerald::ChallengeError, /nonce/)
+    expect { c.verify({}, nonce: "") }.to raise_error(ArgumentError, /nonce/)
+    expect { c.verify({}, nonce: nil) }.to raise_error(ArgumentError, /nonce/)
     expect { c.verify({}, challenge_id: "ch_1") }.to raise_error(ArgumentError)
+  end
+
+  it "refuses a verdict token outside pass/warn/fail" do
+    ["allow", "review", "", nil, 7].each do |token|
+      c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => token } }) } })
+      expect { c.verify({}, nonce: "n_1") }
+        .to raise_error(RootHerald::HttpError, /verdict\.device\.verdict/), token.inspect
+    end
+  end
+
+  it "returns warn as the server's token" do
+    c = bg(->(*_args) { { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "warn" } }) } })
+    expect(c.verify({}, nonce: "n_1").verdict).to eq(:warn)
+  end
+
+  it "passes a key beside a non-passing verdict through" do
+    c = bg(->(*_args) { { status: 200, body: JSON.generate(
+      "verdict" => { "device" => { "verdict" => "fail" } },
+      "key" => { "keyId" => "key_1", "jwk" => { "kty" => "EC", "crv" => "P-256", "x" => "eHg", "y" => "eXk" },
+                 "purpose" => "sign", "certifiedAt" => "2030-01-01T00:01:00Z" }
+    ) } })
+    result = c.verify({}, nonce: "n_1")
+    expect(result.verdict).to eq(:fail)
+    expect(result.key.key_id).to eq("key_1")
+  end
+
+  it "defaults the request timeout to 30 seconds" do
+    expect(RootHerald::Client::DEFAULT_TIMEOUT_SECONDS).to eq(30.0)
+    expect(bg(->(*_args) { {} }).instance_variable_get(:@timeout)).to eq(30.0)
+  end
+
+  it "maps a 401 activation_refused to ActivationRefusedError, not InvalidSecretKeyError" do
+    c = bg(->(*_args) { { status: 401, body: '{"error":"activation_refused","message":"Invalid credential activation response"}' } })
+    expect { c.verify({}, nonce: "n_1") }.to raise_error(RootHerald::ActivationRefusedError) { |e|
+      expect(e).not_to be_a(RootHerald::InvalidSecretKeyError)
+      expect(e.server_error).to eq("activation_refused")
+      expect(e.message).to eq("Invalid credential activation response")
+    }
+    bare = bg(->(*_args) { { status: 401, body: "" } })
+    expect { bare.verify({}, nonce: "n_1") }.to raise_error(RootHerald::InvalidSecretKeyError)
+  end
+
+  it "maps a limiter 429 to RateLimitedError with retry_after_seconds" do
+    c = bg(->(*_args) { { status: 429, body: '{"error":"rate_limited","message":"Too many requests","retryAfterSeconds":60}',
+                          headers: { "Retry-After" => "17" } } })
+    expect { c.verify({}, nonce: "n_1") }.to raise_error(RootHerald::RateLimitedError) { |e|
+      expect(e).not_to be_a(RootHerald::QuotaExceededError)
+      expect(e.retry_after_seconds).to eq(17)
+      expect(e.server_error).to eq("rate_limited")
+    }
+    from_body = bg(->(*_args) { { status: 429, body: '{"error":"rate_limited","retryAfterSeconds":60}' } })
+    expect { from_body.verify({}, nonce: "n_1") }.to raise_error(RootHerald::RateLimitedError) { |e|
+      expect(e.retry_after_seconds).to eq(60)
+    }
+    bare = bg(->(*_args) { { status: 429, body: "" } })
+    expect { bare.verify({}, nonce: "n_1") }.to raise_error(RootHerald::RateLimitedError) { |e|
+      expect(e.retry_after_seconds).to be_nil
+    }
+  end
+
+  it "maps a 429 carrying X-RootHerald-Quota to QuotaExceededError whatever the body" do
+    c = bg(->(*_args) { { status: 429, body: "{}", headers: { "X-RootHerald-Quota" => "device-limit-exceeded" } } })
+    expect { c.verify({}, nonce: "n_1") }.to raise_error(RootHerald::QuotaExceededError)
+  end
+
+  it "keeps a 422 or 402 whose code no class covers generic, with the code" do
+    c = bg(->(*_args) { { status: 422, body: '{"error":"posture_not_bound","message":"no posture policy"}' } })
+    expect { c.issue_challenge(ask: %w[posture]) }.to raise_error(RootHerald::HttpError) { |e|
+      expect(e).not_to be_a(RootHerald::UnknownPolicyError)
+      expect(e.status).to eq(422)
+      expect(e.server_error).to eq("posture_not_bound")
+      expect(e.message).to eq("no posture policy")
+    }
+    c = bg(->(*_args) { { status: 402, body: '{"error":"plan_lapsed","message":"plan lapsed"}' } })
+    expect { c.issue_challenge(ask: %w[posture]) }.to raise_error(RootHerald::HttpError) { |e|
+      expect(e.status).to eq(402)
+      expect(e.server_error).to eq("plan_lapsed")
+    }
   end
 
   # ── relay_enroll (POST /api/v1/attest/enroll) ──
@@ -508,5 +589,14 @@ RSpec.describe RootHerald::Client do
     c = bg(->(*_args) { { status: 409, body: '{"message":"stale"}' } })
     expect { c.relay_activate("enrollmentId" => "enr-1", "decryptedSecret" => "s") }
       .to raise_error(RootHerald::ChallengeError)
+  end
+
+  it "relay_activate maps a refusal to ActivationRefusedError, not InvalidSecretKeyError" do
+    c = bg(->(*_args) { { status: 401, body: '{"error":"activation_refused","message":"Invalid credential activation response"}' } })
+    expect { c.relay_activate("enrollmentId" => "enr-1", "decryptedSecret" => "wrong") }
+      .to raise_error(RootHerald::ActivationRefusedError)
+    c = bg(->(*_args) { { status: 401, body: '{"error":"invalid_secret_key"}' } })
+    expect { c.relay_activate("enrollmentId" => "enr-1", "decryptedSecret" => "s") }
+      .to raise_error(RootHerald::InvalidSecretKeyError)
   end
 end
