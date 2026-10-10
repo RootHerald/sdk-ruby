@@ -189,13 +189,13 @@ and the server's `server_error`:
 | ------ | ----------------------------------------------------- | ------------------------- |
 | 401    | `activation_refused`                                  | `ActivationRefusedError`  |
 | 401    | anything else                                         | `InvalidSecretKeyError`   |
-| 400    | `invalid_ask`                                         | `InvalidAskError`         |
-| 400    | anything else, including `wire_version_unsupported`, `invalid_enroll_shape` | `InvalidEvidenceError` |
+| 400    | `invalid_ask`, `invalid_purpose`                      | `InvalidAskError`         |
+| 400    | anything else, including `wire_version_unsupported`, `invalid_enroll_shape`, `invalid_certification` | `InvalidEvidenceError` |
 | 409    | `key_rotation_conflict`                               | `HttpError`               |
-| 409    | anything else                                         | `ChallengeError`          |
+| 409    | anything else, including `challenge_expired_or_used`  | `ChallengeError`          |
 | 422    | `unknown_policy`, or none                             | `UnknownPolicyError`      |
 | 422    | `admission_refused`                                   | `AdmissionRefusedError`   |
-| 422    | `expected_unknown`, `key_disclosure_too_low`          | `HttpError`               |
+| 422    | `expected_unknown`, `key_disclosure_too_low`, `purpose_unsupported`, `certification_rejected` | `HttpError` |
 | 429    | `budget_exhausted`, or an `X-RootHerald-Quota` header | `QuotaExceededError`      |
 | 429    | anything else                                         | `RateLimitedError`        |
 

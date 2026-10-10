@@ -704,7 +704,7 @@ module RootHerald
       when 409
         (code == "key_rotation_conflict" ? HttpError : ChallengeError).new(status, body, message, code)
       when 400
-        (code == "invalid_ask" ? InvalidAskError : InvalidEvidenceError).new(status, body, message, code)
+        (%w[invalid_ask invalid_purpose].include?(code) ? InvalidAskError : InvalidEvidenceError).new(status, body, message, code)
       when 429
         if code == "budget_exhausted" || headers.key?(QUOTA_HEADER)
           QuotaExceededError.new(status, body, message, code, budget)

@@ -32,7 +32,10 @@ reverse; the server refuses a 7.0-shaped enroll body with
   PKCS#1 v1.5). P-384 is no longer accepted: no device certifies one.
 - A 429 `budget_exhausted` is `QuotaExceededError` with `#budget` (`id`,
   `name`); the `quota_exceeded` code is gone. A 409 `key_rotation_conflict`
-  is a plain `HttpError`, not `ChallengeError`.
+  is a plain `HttpError`, not `ChallengeError`. A 400 `invalid_purpose` is
+  `InvalidAskError` (`server_error` carries the code); a 400
+  `invalid_certification` is `InvalidEvidenceError`; a 422
+  `purpose_unsupported` or `certification_rejected` is a plain `HttpError`.
 - `Verdict` is the server's own token: `:pass` / `:warn` / `:fail`
   (`Verdict::PASS` / `WARN` / `FAIL`) replace `:allow` / `:warn` / `:deny`,
   the same vocabulary as every other Root Herald SDK. `Verdict.from_raw`

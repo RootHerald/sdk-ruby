@@ -73,8 +73,9 @@ module RootHerald
   end
 
   # The challenge named an ask the server does not know, such as the retired
-  # "key" (HTTP 400, server code "invalid_ask"). The backend's code is wrong,
-  # not the device.
+  # "key" (HTTP 400, server code "invalid_ask"), or the key challenge named a
+  # purpose it does not know (server code "invalid_purpose"; #server_error
+  # carries which). The backend's code is wrong, not the device.
   class InvalidAskError < HttpError
     def code = "invalid_ask"
   end

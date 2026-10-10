@@ -393,6 +393,11 @@ RSpec.describe RootHerald::Client do
     [400, "wire_version_unsupported"] => RootHerald::InvalidEvidenceError,
     [400, "invalid_enroll_shape"] => RootHerald::InvalidEvidenceError,
     [400, "invalid_ask"] => RootHerald::InvalidAskError,
+    [400, "invalid_purpose"] => RootHerald::InvalidAskError,
+    [400, "invalid_certification"] => RootHerald::InvalidEvidenceError,
+    [409, "challenge_expired_or_used"] => RootHerald::ChallengeError,
+    [422, "purpose_unsupported"] => RootHerald::HttpError,
+    [422, "certification_rejected"] => RootHerald::HttpError,
     [429, "budget_exhausted"] => RootHerald::QuotaExceededError,
     [429, "rate_limited"] => RootHerald::RateLimitedError
   }.each do |(status, code), klass|
@@ -448,6 +453,16 @@ RSpec.describe RootHerald::Client do
     expect { c.verify({}, nonce: "n_1") }.to raise_error(RootHerald::QuotaExceededError) { |e|
       expect(e.budget).to be_nil
     }
+  end
+
+  it "maps a 400 invalid_purpose to InvalidAskError, not InvalidEvidenceError" do
+    c = bg(->(*_args) { { status: 400, body: '{"error":"invalid_purpose","message":"purpose must be one of sign, decrypt"}' } })
+    expect { c.issue_key_challenge(purpose: RootHerald::Client::KEY_PURPOSE_SIGN) }
+      .to raise_error(RootHerald::InvalidAskError) { |e|
+        expect(e).not_to be_a(RootHerald::InvalidEvidenceError)
+        expect(e.server_error).to eq("invalid_purpose")
+        expect(e.status).to eq(400)
+      }
   end
 
   it "keeps a 409 key_rotation_conflict generic, with the code, not ChallengeError" do
