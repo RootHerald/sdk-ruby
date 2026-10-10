@@ -58,27 +58,57 @@ module RootHerald
     def code = "admission_refused"
   end
 
-  # The challenge is unknown, expired, or already consumed (HTTP 409).
+  # The challenge is unknown, expired, or already consumed (HTTP 409). A 409
+  # carrying "key_rotation_conflict" is a plain HttpError instead.
   class ChallengeError < HttpError
     def code = "challenge_error"
   end
 
-  # The submitted evidence blob was malformed or unparseable (HTTP 400). Note:
-  # an un-enrolled / failing device is NOT this error — it returns a verdict.
+  # The submitted blob was malformed or unparseable (HTTP 400), including a
+  # 7.0-shaped enroll body ("wire_version_unsupported") and a nested body
+  # whose qualifiedName does not match ("invalid_enroll_shape"). Note: an
+  # un-enrolled / failing device is NOT this error — it returns a verdict.
   class InvalidEvidenceError < HttpError
     def code = "invalid_evidence"
   end
 
-  # The tenant has exceeded its metered verify quota (HTTP 429 with server
-  # code "quota_exceeded" or an X-RootHerald-Quota header). A 429 without
-  # that signal is RateLimitedError.
-  class QuotaExceededError < HttpError
-    def code = "quota_exceeded"
+  # The challenge named an ask the server does not know, such as the retired
+  # "key" (HTTP 400, server code "invalid_ask"). The backend's code is wrong,
+  # not the device.
+  class InvalidAskError < HttpError
+    def code = "invalid_ask"
   end
 
-  # The request-rate limiter refused the call (HTTP 429 without a quota
+  # Client#verify was given expected_key / expected_devices and the verdict
+  # did not echo them under +expected+: the server did not enforce the
+  # binding, so the verdict says nothing about which device answered. The
+  # HTTP exchange succeeded; +status+ is 200.
+  class ExpectedNotEnforcedError < HttpError
+    def code = "expected_not_enforced"
+  end
+
+  # The budget that refused a device, as the server names it.
+  Budget = Struct.new(:id, :name, keyword_init: true)
+
+  # The API key's budget cannot pay for a device new to the period (HTTP 429
+  # with server code "budget_exhausted" or an X-RootHerald-Quota header).
+  # +budget+ names the budget that refused. A 429 without that signal is
+  # RateLimitedError.
+  class QuotaExceededError < HttpError
+    # @return [Budget, nil] the budget that refused, when the server named it
+    attr_reader :budget
+
+    def initialize(status, body, message = nil, server_error = nil, budget = nil)
+      @budget = budget
+      super(status, body, message, server_error)
+    end
+
+    def code = "budget_exhausted"
+  end
+
+  # The request-rate limiter refused the call (HTTP 429 without a budget
   # signal). Retry after +retry_after_seconds+. Distinct from
-  # QuotaExceededError, the metered billing ceiling.
+  # QuotaExceededError, the metered budget ceiling.
   class RateLimitedError < HttpError
     # @return [Integer, nil] seconds to wait before retrying: the Retry-After
     #   header, else the body's +retryAfterSeconds+, else nil
