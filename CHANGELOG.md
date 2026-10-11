@@ -31,7 +31,8 @@ reverse; the server refuses a 7.0-shaped enroll body with
   `KeySignatures.verify` and `certify_key` accept RSA-2048 keys (RS256,
   PKCS#1 v1.5). P-384 is no longer accepted: no device certifies one.
 - A 429 `budget_exhausted` is `QuotaExceededError` with `#budget` (`id`,
-  `name`); the `quota_exceeded` code is gone. A 409 `key_rotation_conflict`
+  `name`); `QuotaExceededError#code` is `"budget_exhausted"`, was
+  `"quota_exceeded"`, and the `quota_exceeded` server code is gone. A 409 `key_rotation_conflict`
   is a plain `HttpError`, not `ChallengeError`. A 400 `invalid_purpose` is
   `InvalidAskError` (`server_error` carries the code); a 400
   `invalid_certification` is `InvalidEvidenceError`; a 422

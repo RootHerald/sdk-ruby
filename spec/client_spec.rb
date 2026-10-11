@@ -192,6 +192,17 @@ RSpec.describe RootHerald::Client do
     expect(result.expected).to eq("key" => "key_1", "devices" => ["dev-9"])
   end
 
+  # The server accepts any GUID spelling in expected_devices and echoes the
+  # alias lowercase, so the comparison is case-insensitive.
+  it "verify compares aliases case-insensitively" do
+    c = bg(->(*_args) {
+      { status: 200, body: JSON.generate("verdict" => { "device" => { "verdict" => "pass", "ueid" => "dev-9" },
+                                                        "expected" => { "devices" => %w[dev-9 dev-10] } }) }
+    })
+    result = c.verify({}, nonce: "n_1", expected_devices: [" DEV-9 ", "Dev-10"])
+    expect(result.verdict).to eq(RootHerald::Verdict::PASS)
+  end
+
   # The API ignores unknown JSON fields, so a server that predates the binding
   # would accept any device and answer with no `expected` block.
   it "verify refuses a verdict that does not echo the expected binding" do

@@ -515,10 +515,16 @@ module RootHerald
       refuse.call("expected_key") if expected_key && echoed["key"] != expected_key
       return unless expected_devices
 
+      # Aliases are GUIDs: the server accepts any spelling and echoes lowercase.
+      asked = expected_devices.map { |a| normalize_alias(a) }.uniq.sort
       devices = echoed["devices"]
-      refuse.call("expected_devices") unless devices.is_a?(Array) && devices.grep(String).uniq.sort == expected_devices.uniq.sort
+      refuse.call("expected_devices") unless devices.is_a?(Array) && devices.grep(String).map { |a| normalize_alias(a) }.uniq.sort == asked
       ueid = result.device_id
-      refuse.call("expected_devices") if result.verdict != Verdict::FAIL && ueid && !expected_devices.include?(ueid)
+      refuse.call("expected_devices") if result.verdict != Verdict::FAIL && ueid && !asked.include?(normalize_alias(ueid))
+    end
+
+    def normalize_alias(alias_value)
+      alias_value.strip.downcase
     end
 
     def require_non_empty_string(value, field)
