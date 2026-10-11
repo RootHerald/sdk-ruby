@@ -229,4 +229,72 @@ RSpec.describe RootHerald::DeviceEncryption do
       expect(open_envelope(a, f[:priv])).to eq(plaintext)
     end
   end
+
+  # Known-answer vectors from platform Fixtures/envelope. ECDH-ES replays
+  # byte for byte with the vector's ephemeral key and IV. RSA-OAEP-256 draws
+  # its OAEP seed inside OpenSSL, so the header, IV, ciphertext and tag are
+  # byte-equal and the encrypted key must unwrap to the vector's CEK.
+  describe "the platform vectors" do
+    def vector(file)
+      JSON.parse(File.read(File.join(__dir__, "fixtures", "envelope", file)))
+    end
+
+    def public_jwk(private_jwk)
+      private_jwk["kty"] == "EC" ? private_jwk.slice("kty", "crv", "x", "y") : private_jwk.slice("kty", "n", "e")
+    end
+
+    # SEC1 ECPrivateKey DER for P-256 from the private JWK's d, x and y.
+    def ec_private_key(jwk)
+      point = "\x04".b + decode(jwk["x"]) + decode(jwk["y"])
+      der = OpenSSL::ASN1::Sequence.new([
+        OpenSSL::ASN1::Integer.new(1),
+        OpenSSL::ASN1::OctetString.new(decode(jwk["d"])),
+        OpenSSL::ASN1::ASN1Data.new([OpenSSL::ASN1::ObjectId.new("prime256v1")], 0, :CONTEXT_SPECIFIC),
+        OpenSSL::ASN1::ASN1Data.new([OpenSSL::ASN1::BitString.new(point)], 1, :CONTEXT_SPECIFIC)
+      ]).to_der
+      OpenSSL::PKey::EC.new(der)
+    end
+
+    def scripted(chunks)
+      lambda do |n|
+        chunk = chunks.shift
+        raise "drew more random bytes than the vector records" if chunk.nil?
+        raise "drew #{n} bytes, vector has #{chunk.bytesize}" unless chunk.bytesize == n
+
+        chunk
+      end
+    end
+
+    it "replays ECDH-ES byte for byte" do
+      v = vector("ecdh-es-a256gcm.json")
+      eph = ec_private_key(v["ephemeral"])
+      key = certified(alg: "ECDH-ES", jwk: public_jwk(v["recipient"]))
+
+      jwe = described_class.encrypt_to_device(key, decode(v["plaintext"]), ephemeral: -> { eph },
+                                                                           random: scripted([decode(v["iv"])]))
+
+      expect(jwe).to eq(v["jwe"])
+    end
+
+    it "replays RSA-OAEP-256 except the OAEP seed" do
+      v = vector("rsa-oaep-256-a256gcm.json")
+      r = v["recipient"]
+      key = certified(alg: "RSA-OAEP-256", jwk: public_jwk(r))
+
+      jwe = described_class.encrypt_to_device(key, decode(v["plaintext"]),
+                                              ephemeral: -> { raise "RSA drew an ephemeral key" },
+                                              random: scripted([decode(v["cek"]), decode(v["iv"])]))
+
+      expected = v["jwe"].split(".", -1)
+      actual = jwe.split(".", -1)
+      [0, 2, 3, 4].each { |i| expect(actual[i]).to eq(expected[i]), "segment #{i}" }
+      int = ->(f) { OpenSSL::BN.new(decode(r[f]), 2) }
+      priv = OpenSSL::PKey::RSA.new(OpenSSL::ASN1::Sequence.new([
+        OpenSSL::ASN1::Integer.new(0),
+        *%w[n e d p q dp dq qi].map { |f| OpenSSL::ASN1::Integer.new(int.call(f)) }
+      ]).to_der)
+      cek = priv.decrypt(decode(actual[1]), rsa_padding_mode: "oaep", rsa_oaep_md: "sha256", rsa_mgf1_md: "sha256")
+      expect(cek).to eq(decode(v["cek"]))
+    end
+  end
 end
