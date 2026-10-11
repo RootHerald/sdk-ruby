@@ -10,17 +10,17 @@ module RootHerald
   #
   # The customer's keyless client collects opaque blobs (no keys, no Root Herald
   # contact) and hands them to the customer's own server. The server uses this
-  # client, authenticated with its +rh_sk_+ secret key, to relay them to Root
-  # Herald. It mirrors @rootherald/node's four backend helpers:
-  #   1. #relay_enroll    — POST /api/v1/attest/enroll
-  #   2. #relay_activate  — POST /api/v1/attest/activate
-  #   3. #issue_challenge — POST /api/v1/attest/challenge (a challenge carrying the ask)
-  #   4. #verify          — POST /api/v1/attest/verify     (appraise → verdict)
+  # client, authenticated with its +rh_sk_+ secret key, to drive three
+  # ceremonies of two legs each, the same six helpers as @rootherald/node:
+  #
+  #   enroll      #relay_enroll / #relay_activate         POST /api/v1/attest/enroll, /activate
+  #   mint a key  #issue_key_challenge / #certify_key     POST /api/v1/keys/challenge, /certify
+  #   attest      #issue_challenge / #verify              POST /api/v1/attest/challenge, /verify
   #
   # Nothing a client sends locates a row. The server resolves the tenant from
   # the +rh_sk_+ key, the challenge from the nonce the proof was made over, the
-  # enrollment from the +enrollmentId+ it minted, and the device from the proof
-  # itself. No identifier the server assigns is relayed to a device.
+  # enrollment from the +enrollmentId+ it minted, and the installation from the
+  # proof itself. No identifier the server assigns is relayed to a device.
   #
   # The verdict is computed by Root Herald and returned to the backend — it never
   # travels through the keyless client.
@@ -29,17 +29,23 @@ module RootHerald
     SECRET_KEY_PREFIX = "rh_sk_"
     # Per-request timeout in seconds, the same in every Root Herald server SDK.
     DEFAULT_TIMEOUT_SECONDS = 30.0
-    # Marks a 429 as the metered quota, whatever the body says.
+    # Marks a 429 as the metered budget, whatever the body says.
     QUOTA_HEADER = "x-rootherald-quota"
 
-    # Ask: prove which enrolled device this is.
+    # Ask: prove which enrolled installation this is.
     ASK_IDENTITY = "identity"
     # Ask: prove the boot / configuration state (quote + event log).
     ASK_POSTURE = "posture"
-    # Ask: certify a fresh TPM-resident signing key under the AK.
-    ASK_KEY = "key"
-    # The only key purpose today.
+
+    # Key purpose: a signing key (ES256 / RS256).
     KEY_PURPOSE_SIGN = "sign"
+    # Key purpose: a decryption key (ECDH-ES / RSA-OAEP-256). The server refuses
+    # it before wire 8.1.
+    KEY_PURPOSE_DECRYPT = "decrypt"
+    KEY_PURPOSES = [KEY_PURPOSE_SIGN, KEY_PURPOSE_DECRYPT].freeze
+    KEY_FORMATS = %w[jwe apple-ecies].freeze
+    EC_ALGS = %w[ES256 ECDH-ES].freeze
+    RSA_ALGS = %w[RS256 RSA-OAEP-256].freeze
 
     # A challenge minted by #issue_challenge. Relay +challenge+ to the client
     # verbatim; it carries the nonce and the ask the server bound to it. Keep
@@ -47,13 +53,21 @@ module RootHerald
     # second segment of +challenge+ — and pass it to #verify.
     Challenge = Struct.new(:nonce, :challenge, :expires_at, keyword_init: true)
 
-    # A TPM-resident signing key the appraisal certified; +AttestResult#key+
-    # when the challenge asked for "key" and the verdict passed. +jwk+ is the
-    # public key as a Hash (kty "EC", crv "P-256" | "P-384", base64url x / y);
-    # +auth_policy+ is the hex authPolicy digest from the key's public area,
-    # or nil; +certified_at+ is a Time. Verify later device signatures with
-    # +RootHerald::KeySignatures.verify+.
-    CertifiedKey = Struct.new(:key_id, :jwk, :purpose, :auth_policy, :certified_at, keyword_init: true)
+    # A key challenge minted by #issue_key_challenge. Relay +key_challenge+ to
+    # the client's +MintKey+ verbatim; keep +nonce+ and pass it to #certify_key.
+    KeyChallenge = Struct.new(:nonce, :key_challenge, :expires_at, keyword_init: true)
+
+    # The key #certify_key registered. +device_id+ is the tenant's alias for the
+    # device that holds it; +key_id+ is stable across rotations of the same
+    # purpose; +alg+ is "ES256" / "RS256" for a sign key, "ECDH-ES" /
+    # "RSA-OAEP-256" for a decrypt key; +format+ ("jwe" | "apple-ecies") is
+    # present for a decrypt key only; +jwk+ is the public half as a Hash,
+    # +{ "kty" => "EC", "crv" => "P-256", "x", "y" }+ or
+    # +{ "kty" => "RSA", "n", "e" }+, chosen by the device; +hardware_bound+ is
+    # false on macOS, where only possession is proved; +certified_at+ is a Time.
+    # Verify later device signatures with +RootHerald::KeySignatures.verify+.
+    CertifiedKey = Struct.new(:device_id, :key_id, :purpose, :alg, :format, :jwk, :hardware_bound, :certified_at,
+                              keyword_init: true)
 
     # The activation challenge — the +201+ response body of
     # POST /api/v1/attest/enroll, handed to the client's +EnrollComplete+ leg.
@@ -78,9 +92,9 @@ module RootHerald
     # Result of the enroll-relay leg (#relay_enroll), mirroring
     # @rootherald/node's +RelayEnrollResult+.
     #
-    # Enrollment always issues a challenge, including for a device already known —
-    # re-enrollment is how a device rotates its attestation key, so
-    # short-circuiting it would make rotation impossible. Relay +challenge+ to
+    # Every enrollment issues a challenge, a device already known included:
+    # each activation creates a new installation of the device with its own
+    # attestation key, which the client keeps as a blob. Relay +challenge+ to
     # the client's +EnrollComplete+, then call #relay_activate.
     #
     # +challenge+ is nil for an iOS enrollment: its +201+ body is empty and
@@ -91,7 +105,8 @@ module RootHerald
     # The terminal response of the activate-relay leg (#relay_activate) —
     # POST /api/v1/attest/activate. +device_id+ is the load-bearing field the
     # backend maps to its user. It is this tenant's alias for the device, not a
-    # global identifier, and must not be relayed to the device.
+    # global identifier, and must not be relayed to the device. It does not
+    # change across installations, re-enrollments or a TPM clear.
     ActivateResult = Struct.new(:device_id, :status, :enrolled_at, keyword_init: true)
 
     # The result of #verify: the device verdict and the full verdict data.
@@ -99,20 +114,32 @@ module RootHerald
     # +assurance_claims_met+ / +enrollment_required+ mirror @rootherald/node:
     # the top-level +assuranceClaimsMet+ (satisfied assurance URNs) and
     # +enrollment_required+ (the attest-first / enroll-on-miss signal).
-    # +key+ is the CertifiedKey from the top-level +key+, passed through as the
-    # server sent it; the server sends one only on a passing verdict for a
-    # challenge that asked for "key". nil otherwise.
     #
     # The cohort accessors expose the ADDITIVE, advisory-only cohort fields the
     # server populates on +verdict_data["device"]+ (camelCase keys) when a
     # quote-bound event log was supplied — never a trust gate. They return nil
     # (or {} for the per-PCR map) when the server omitted them.
-    AttestResult = Struct.new(:verdict, :verdict_data, :assurance_claims_met, :enrollment_required, :key,
+    AttestResult = Struct.new(:verdict, :verdict_data, :assurance_claims_met, :enrollment_required,
                               keyword_init: true) do
       # @return [Hash] the raw +device+ sub-object, passed through verbatim
       def device
         d = verdict_data.is_a?(Hash) ? verdict_data["device"] : nil
         d.is_a?(Hash) ? d : {}
+      end
+
+      # @return [String, nil] the tenant's alias for the device
+      #   (+verdict.device.ueid+); nil below the pseudonymous disclosure class
+      def device_id
+        v = device["ueid"]
+        v.is_a?(String) ? v : nil
+      end
+
+      # @return [Hash] the binding the server enforced, +{ "key" => keyId,
+      #   "devices" => [alias, ...] }+ with absent members omitted; {} when the
+      #   challenge named none
+      def expected
+        v = verdict_data.is_a?(Hash) ? verdict_data["expected"] : nil
+        v.is_a?(Hash) ? v : {}
       end
 
       # @return [String, nil] opaque cohort key
@@ -235,25 +262,30 @@ module RootHerald
     # (AdmissionRefusedError, 422 admission_refused).
     #
     # @param enroll_request_blob [Hash] the opaque +EnrollBegin()+ blob from the
-    #        client, relayed verbatim. Wire shape (camelCase keys), discriminated
-    #        by +platform+: a TPM or macOS blob carries +ekPublicKey+ and
-    #        +akPublicArea+; an iOS blob carries +iosKeyId+,
-    #        +iosAttestationObject+ and +nonce+. String or symbol keys are
-    #        accepted.
+    #        client, relayed verbatim, unknown fields included. Wire shape
+    #        (camelCase keys), discriminated by +platform+: a TPM blob
+    #        ("windows" | "linux") carries +ekPublicKey+ and +attestationKey+
+    #        +{ publicArea, parentPublicArea, qualifiedName }+; a macOS blob
+    #        carries +ekPublicKey+ and +akPublicArea+; an iOS blob carries
+    #        +iosKeyId+, +iosAttestationObject+ and +nonce+. String or symbol
+    #        keys are accepted.
     # @return [RelayEnrollResult]
-    # @raise [ArgumentError] if the blob lacks the fields its platform requires
+    # @raise [ArgumentError] if the blob is not one of the three shapes. A flat
+    #   TPM blob (+akPublicArea+ under "windows" / "linux") is the 7.0 shape
+    #   and is refused here, before any request.
     def relay_enroll(enroll_request_blob)
-      ios = blob_field(enroll_request_blob, "platform") == "ios"
-      required = ios ? %w[iosKeyId iosAttestationObject nonce] : %w[ekPublicKey akPublicArea]
-      unless required.all? { |k| blob_field(enroll_request_blob, k).is_a?(String) }
-        raise ArgumentError, "relay_enroll requires an enroll request blob with #{required.join('/')}"
+      unless well_formed_enroll_blob?(enroll_request_blob)
+        raise ArgumentError, "relay_enroll requires an enroll request blob: ekPublicKey with " \
+                             "attestationKey { publicArea, parentPublicArea, qualifiedName } (windows/linux), " \
+                             "ekPublicKey with akPublicArea (macos), or iosKeyId, iosAttestationObject and nonce (ios)"
       end
+      ios = enroll_platform(enroll_request_blob) == "ios"
 
       status, body, headers = raw_post("/api/v1/attest/enroll", enroll_request_blob)
       raise map_error(status, body, headers) if status >= 400
 
       data = parse_object(status, body)
-      return RelayEnrollResult.new(challenge: nil) if ios && data.empty?
+      return RelayEnrollResult.new(challenge: nil) if ios && !data.key?("enrollmentId")
 
       challenge = EnrollChallenge.new(
         enrollment_id: data["enrollmentId"],
@@ -301,6 +333,70 @@ module RootHerald
       )
     end
 
+    # POST /api/v1/keys/challenge — mint a single-use key challenge for a
+    # purpose. Relay +key_challenge.key_challenge+ to the client verbatim; its
+    # +MintKey+ answers with a certification, which you submit with
+    # #certify_key using the returned nonce.
+    #
+    # Refused with 422 key_disclosure_too_low when the API key's disclosure
+    # ceiling is below pseudonymous: a key whose id could never be returned is
+    # never minted.
+    #
+    # @param purpose [String] KEY_PURPOSE_SIGN or KEY_PURPOSE_DECRYPT
+    # @param expected_devices [Array<String>, nil] aliases you enrolled; the
+    #        certify leg is refused unless one of them certified the key. Pass
+    #        the alias of the device that just passed an attest challenge, so
+    #        the key provably comes from it.
+    # @return [KeyChallenge]
+    # @raise [ArgumentError] if the purpose is not one of KEY_PURPOSES, or
+    #   expected_devices is not a non-empty list of non-empty strings
+    def issue_key_challenge(purpose:, expected_devices: nil)
+      unless KEY_PURPOSES.include?(purpose)
+        raise ArgumentError, "issue_key_challenge requires purpose: to be one of #{KEY_PURPOSES.join('/')}"
+      end
+
+      body = { "purpose" => purpose }
+      body["expectedDevices"] = require_alias_list(expected_devices, "expected_devices") unless expected_devices.nil?
+
+      data = post("/api/v1/keys/challenge", body)
+      unless %w[nonce keyChallenge expiresAt].all? { |k| data[k].is_a?(String) }
+        raise HttpError.new(200, data.to_json, "key challenge response missing nonce/keyChallenge/expiresAt")
+      end
+
+      KeyChallenge.new(
+        nonce: data["nonce"],
+        key_challenge: data["keyChallenge"],
+        expires_at: data["expiresAt"]
+      )
+    end
+
+    # POST /api/v1/keys/certify — relay the client's +MintKey+ output under the
+    # key challenge's nonce and return the key Root Herald registered. Store
+    # +key_id+ and +jwk+ against +device_id+; later signatures are checked
+    # locally with +RootHerald::KeySignatures.verify+.
+    #
+    # The certification is relayed verbatim, whichever platform shape it is:
+    # +{ publicArea, attest, signature }+ from a TPM, or the +platform+-tagged
+    # body from macOS / iOS. The key is the call's only output, so a malformed
+    # one is refused with HttpError rather than returned half-parsed.
+    #
+    # @param certification [Hash] the opaque +MintKey()+ blob; string or
+    #        symbol keys are accepted
+    # @param nonce [String] the single-use handle from #issue_key_challenge
+    # @return [CertifiedKey]
+    # @raise [ArgumentError] if the nonce is empty or the certification is not
+    #   one of the shapes above; no request is made
+    def certify_key(certification, nonce:)
+      raise ArgumentError, "certify_key requires nonce (from issue_key_challenge)" if nonce.to_s.empty?
+      unless well_formed_certification?(certification)
+        raise ArgumentError, "certify_key requires the client's certification: { publicArea, attest, signature } " \
+                             "on a TPM, or the platform form from macOS / iOS"
+      end
+
+      data = post("/api/v1/keys/certify", { "nonce" => nonce, "certification" => certification })
+      parse_certified_key(data)
+    end
+
     # POST /api/v1/attest/challenge — mint a challenge that carries the ask.
     # Relay +challenge.challenge+ to the client verbatim; it quotes over it,
     # then submit the resulting evidence with #verify using the returned nonce.
@@ -311,17 +407,25 @@ module RootHerald
     # pins it on the challenge. A +policy+ field in a hand-built body is
     # refused with 400 policy_bound_to_key.
     #
-    # @param device_hint [String, nil] optional advisory device hint
-    # @param ask [Array<String>, nil] any of ASK_IDENTITY / ASK_POSTURE /
-    #        ASK_KEY; nil or empty means the server default, identity + posture
-    # @param key_purpose [String, nil] purpose of the certified key when asking
-    #        for ASK_KEY (KEY_PURPOSE_SIGN)
+    # @param ask [Array<String>, nil] any of ASK_IDENTITY / ASK_POSTURE; nil or
+    #        empty means the server default, identity + posture. An ask the
+    #        server does not know is 400 invalid_ask (InvalidAskError).
+    # @param expected_key [String, nil] the key_id of a key you certified. Only
+    #        the installation holding that key can pass; any other answers a
+    #        failing verdict with reason expected_device_mismatch. An unknown
+    #        id is 422 expected_unknown.
+    # @param expected_devices [Array<String>, nil] aliases you enrolled. Only
+    #        one of them can pass; any other device answers a failing verdict
+    #        with reason expected_device_mismatch. An unknown alias is
+    #        422 expected_unknown.
     # @return [Challenge]
-    def issue_challenge(device_hint: nil, ask: nil, key_purpose: nil)
+    # @raise [ArgumentError] if expected_key is not a non-empty string or
+    #   expected_devices is not a non-empty list of non-empty strings
+    def issue_challenge(ask: nil, expected_key: nil, expected_devices: nil)
       body = {}
-      body["deviceHint"] = device_hint unless device_hint.nil?
       body["ask"] = Array(ask).map(&:to_s) unless ask.nil? || Array(ask).empty?
-      body["keyPurpose"] = key_purpose unless key_purpose.nil?
+      body["expectedKey"] = require_non_empty_string(expected_key, "expected_key") unless expected_key.nil?
+      body["expectedDevices"] = require_alias_list(expected_devices, "expected_devices") unless expected_devices.nil?
       data = post("/api/v1/attest/challenge", body)
       unless %w[nonce challenge expiresAt].all? { |k| data[k].is_a?(String) }
         raise HttpError.new(200, data.to_json, "challenge response missing nonce/challenge/expiresAt")
@@ -338,7 +442,7 @@ module RootHerald
     # server-side appraisal and return the verdict.
     #
     # An un-enrolled / failing device is NOT an error — it returns a normal
-    # AttestResult carrying +:fail+/+:warn+. Only protocol/auth/quota problems
+    # AttestResult carrying +:fail+/+:warn+. Only protocol/auth/budget problems
     # raise; a response whose verdict token is not one of pass/warn/fail is
     # one too (HttpError).
     #
@@ -350,15 +454,26 @@ module RootHerald
     # different one. A +policy+ field in a hand-built body is refused with
     # 400 policy_bound_to_key.
     #
+    # When the challenge named +expected_key+ or +expected_devices+, pass the
+    # same values here: the verdict must echo them under +expected+, and a
+    # response that does not is refused with ExpectedNotEnforcedError.
+    #
     # @param evidence [Hash, Array, String] opaque blob from the client collector; passed through verbatim
     # @param nonce [String] the single-use handle from #issue_challenge
     # @param requested_disclosure_class [String, nil] optional disclosure ceiling
     #        ("verdict" | "pseudonymous" | "derived" | "full"); omitted from the
     #        request body when nil
+    # @param expected_key [String, nil] the expected_key the challenge was issued with
+    # @param expected_devices [Array<String>, nil] the expected_devices the
+    #        challenge was issued with
     # @return [AttestResult]
     # @raise [ArgumentError] if the nonce is empty; no request is made
-    def verify(evidence, nonce:, requested_disclosure_class: nil)
+    # @raise [ExpectedNotEnforcedError] if the verdict does not echo the binding
+    def verify(evidence, nonce:, requested_disclosure_class: nil, expected_key: nil, expected_devices: nil)
       raise ArgumentError, "verify requires nonce (from issue_challenge)" if nonce.to_s.empty?
+
+      expected_key = require_non_empty_string(expected_key, "expected_key") unless expected_key.nil?
+      expected_devices = require_alias_list(expected_devices, "expected_devices") unless expected_devices.nil?
 
       body = { "nonce" => nonce, "evidence" => evidence }
       body["requestedDisclosureClass"] = requested_disclosure_class unless requested_disclosure_class.nil?
@@ -374,39 +489,140 @@ module RootHerald
                             "verify response verdict.device.verdict is not pass/warn/fail (got #{device['verdict'].inspect})")
       end
 
-      AttestResult.new(
+      result = AttestResult.new(
         verdict: verdict,
         verdict_data: verdict_data,
         assurance_claims_met: data["assuranceClaimsMet"].is_a?(Array) ? data["assuranceClaimsMet"] : [],
-        enrollment_required: data["enrollmentRequired"] == true,
-        # `key` is a top-level sibling too, passed through as the server sent it.
-        key: data["key"].nil? ? nil : parse_certified_key(data)
+        enrollment_required: data["enrollmentRequired"] == true
       )
+      require_expected_enforced(result, data, expected_key, expected_devices) if expected_key || expected_devices
+      result
     end
 
     private
 
+    # A verdict is only as bound as the server says it enforced. The API
+    # ignores unknown JSON fields, so a server that predates the binding would
+    # accept any device and answer a verdict with no +expected+ block;
+    # comparing the echo with what was asked turns that silence into a refusal.
+    def require_expected_enforced(result, data, expected_key, expected_devices)
+      echoed = result.expected
+      refuse = lambda do |what|
+        raise ExpectedNotEnforcedError.new(200, data.to_json,
+                                           "verify response did not echo the #{what} the challenge named; " \
+                                           "the binding was not enforced")
+      end
+      refuse.call("expected_key") if expected_key && echoed["key"] != expected_key
+      return unless expected_devices
+
+      # Aliases are GUIDs: the server accepts any spelling and echoes lowercase.
+      asked = expected_devices.map { |a| normalize_alias(a) }.uniq.sort
+      devices = echoed["devices"]
+      refuse.call("expected_devices") unless devices.is_a?(Array) && devices.grep(String).map { |a| normalize_alias(a) }.uniq.sort == asked
+      ueid = result.device_id
+      refuse.call("expected_devices") if result.verdict != Verdict::FAIL && ueid && !asked.include?(normalize_alias(ueid))
+    end
+
+    def normalize_alias(alias_value)
+      alias_value.strip.downcase
+    end
+
+    def require_non_empty_string(value, field)
+      raise ArgumentError, "#{field} must be a non-empty string" unless value.is_a?(String) && !value.empty?
+
+      value
+    end
+
+    def require_alias_list(value, field)
+      unless value.is_a?(Array) && !value.empty? && value.all? { |v| v.is_a?(String) && !v.empty? }
+        raise ArgumentError, "#{field} must be a non-empty list of non-empty strings"
+      end
+
+      value
+    end
+
+    # The 8.0 TPM body nests the AK; macOS stays flat (the enclave key has no
+    # parent); iOS is its own shape. A flat TPM body is the 7.0 shape: the
+    # server would answer wire_version_unsupported, and refusing it here keeps
+    # the message specific.
+    def well_formed_enroll_blob?(blob)
+      return false unless blob.is_a?(Hash)
+
+      case enroll_platform(blob)
+      when "ios"
+        %w[iosKeyId iosAttestationObject nonce].all? { |k| blob_field(blob, k).is_a?(String) }
+      when "macos"
+        blob_field(blob, "ekPublicKey").is_a?(String) && blob_field(blob, "akPublicArea").is_a?(String) &&
+          !blob_key?(blob, "attestationKey")
+      when "windows", "linux"
+        ak = blob_field(blob, "attestationKey")
+        blob_field(blob, "ekPublicKey").is_a?(String) && ak.is_a?(Hash) &&
+          %w[publicArea parentPublicArea qualifiedName].all? { |k| blob_field(ak, k).is_a?(String) } &&
+          !blob_key?(blob, "akPublicArea")
+      else
+        false
+      end
+    end
+
+    # The discriminator as JSON.generate will send it: a symbol-keyed Ruby
+    # blob may spell it as a Symbol.
+    def enroll_platform(blob)
+      platform = blob_field(blob, "platform")
+      platform.is_a?(Symbol) ? platform.to_s : platform
+    end
+
+    # The certification is per platform and relayed verbatim, so only its
+    # outer shape is checked: a TPM certification's three base64 strings, or a
+    # platform-tagged body from macOS or iOS.
+    def well_formed_certification?(value)
+      return false unless value.is_a?(Hash)
+      return true if blob_field(value, "platform").is_a?(String)
+
+      %w[publicArea attest signature].all? { |k| blob_field(value, k).is_a?(String) }
+    end
+
+    # Read a /keys/certify response. The JWK family must match +alg+: an EC
+    # key signs ES256 or agrees ECDH-ES, an RSA key signs RS256 or wraps
+    # RSA-OAEP-256. Anything else is refused rather than surfaced half-parsed.
     def parse_certified_key(data)
-      node = data["key"]
-      jwk = node.is_a?(Hash) ? node["jwk"] : nil
-      well_formed = node.is_a?(Hash) && jwk.is_a?(Hash) &&
-                    node["keyId"].is_a?(String) && node["certifiedAt"].is_a?(String) &&
-                    %w[kty crv x y].all? { |f| jwk[f].is_a?(String) }
-      raise HttpError.new(200, data.to_json, "verify response key missing keyId/jwk/certifiedAt") unless well_formed
+      refuse = ->(why) { raise HttpError.new(200, data.to_json, "certify response #{why}") }
+      refuse.call("missing deviceId") unless data["deviceId"].is_a?(String) && !data["deviceId"].empty?
+      refuse.call("missing keyId") unless data["keyId"].is_a?(String) && !data["keyId"].empty?
+      refuse.call("purpose is not one of #{KEY_PURPOSES.join('/')}") unless KEY_PURPOSES.include?(data["purpose"])
+      refuse.call("missing hardwareBound") unless [true, false].include?(data["hardwareBound"])
+      jwk = read_jwk(data["jwk"])
+      refuse.call("jwk is not an EC P-256 or RSA public key") unless jwk
+      algs = jwk["kty"] == "EC" ? EC_ALGS : RSA_ALGS
+      refuse.call("alg #{data['alg'].inspect} does not fit a #{jwk['kty']} key") unless algs.include?(data["alg"])
+      format = data["format"]
+      refuse.call("format is not one of #{KEY_FORMATS.join('/')}") unless format.nil? || KEY_FORMATS.include?(format)
 
       certified_at = begin
-        Time.iso8601(node["certifiedAt"])
+        Time.iso8601(data["certifiedAt"].to_s)
       rescue ArgumentError
-        raise HttpError.new(200, data.to_json, "verify response key.certifiedAt is not a timestamp")
+        refuse.call("certifiedAt is not a timestamp")
       end
 
       CertifiedKey.new(
-        key_id: node["keyId"],
-        jwk: jwk.slice("kty", "crv", "x", "y"),
-        purpose: node["purpose"].is_a?(String) ? node["purpose"] : nil,
-        auth_policy: node["authPolicy"].is_a?(String) ? node["authPolicy"] : nil,
+        device_id: data["deviceId"],
+        key_id: data["keyId"],
+        purpose: data["purpose"],
+        alg: data["alg"],
+        format: format,
+        jwk: jwk,
+        hardware_bound: data["hardwareBound"],
         certified_at: certified_at
       )
+    end
+
+    def read_jwk(value)
+      return nil unless value.is_a?(Hash)
+
+      if value["kty"] == "EC" && value["crv"] == "P-256" && value["x"].is_a?(String) && value["y"].is_a?(String)
+        value.slice("kty", "crv", "x", "y")
+      elsif value["kty"] == "RSA" && value["n"].is_a?(String) && value["e"].is_a?(String)
+        value.slice("kty", "n", "e")
+      end
     end
 
     # Authenticated JSON POST; maps non-2xx to a typed error and parses the body.
@@ -454,6 +670,10 @@ module RootHerald
       blob.key?(key) ? blob[key] : blob[key.to_sym]
     end
 
+    def blob_key?(blob, key)
+      blob.key?(key) || blob.key?(key.to_sym)
+    end
+
     # Map a non-2xx response to the matching typed error, mirroring
     # @rootherald/node. Where one status carries two refusals the server's
     # +error+ code (or a header) tells them apart; a code no class covers
@@ -462,12 +682,14 @@ module RootHerald
       message = nil
       code = nil
       retry_after = nil
+      budget = nil
       begin
         parsed = JSON.parse(body)
         if parsed.is_a?(Hash)
           message = %w[message detail error_description].map { |f| parsed[f] }.find { |v| v.is_a?(String) }
           code = [parsed["error"], parsed["code"]].find { |v| v.is_a?(String) }
           retry_after = parsed["retryAfterSeconds"] if parsed["retryAfterSeconds"].is_a?(Integer)
+          budget = read_budget(parsed["budget"])
         end
       rescue JSON::ParserError
         # non-JSON body; fall through to status-based message
@@ -485,16 +707,24 @@ module RootHerald
                 else HttpError
                 end
         klass.new(status, body, message, code)
-      when 409 then ChallengeError.new(status, body, message, code)
-      when 400 then InvalidEvidenceError.new(status, body, message, code)
+      when 409
+        (code == "key_rotation_conflict" ? HttpError : ChallengeError).new(status, body, message, code)
+      when 400
+        (%w[invalid_ask invalid_purpose].include?(code) ? InvalidAskError : InvalidEvidenceError).new(status, body, message, code)
       when 429
-        if code == "quota_exceeded" || headers.key?(QUOTA_HEADER)
-          QuotaExceededError.new(status, body, message, code)
+        if code == "budget_exhausted" || headers.key?(QUOTA_HEADER)
+          QuotaExceededError.new(status, body, message, code, budget)
         else
           RateLimitedError.new(status, body, message, code, retry_after)
         end
       else HttpError.new(status, body, message, code)
       end
+    end
+
+    def read_budget(value)
+      return nil unless value.is_a?(Hash) && value["id"].is_a?(String) && value["name"].is_a?(String)
+
+      Budget.new(id: value["id"], name: value["name"])
     end
 
     def build_default_transport
