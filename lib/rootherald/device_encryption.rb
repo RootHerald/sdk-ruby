@@ -38,7 +38,8 @@ module RootHerald
     # @return [String] the JWE compact serialization to send to the device
     # @raise [ArgumentError] for a key that cannot open the result: a sign
     #   key, a key without a format, a curve other than P-256, a coordinate
-    #   that is not 32 bytes, or an RSA modulus under 2048 bits
+    #   that is not 32 bytes, an RSA modulus under 2048 bits, an RSA exponent
+    #   below 3, or a plaintext that is not a String
     # @raise [EnvelopeFormatNotSupportedError] for an apple-ecies key, which a
     #   macOS enclave opens and needs an Apple-side encryptor
     def self.encrypt_to_device(key, plaintext, ephemeral: nil, random: nil)
@@ -50,6 +51,7 @@ module RootHerald
       end
       raise ArgumentError, "key has no envelope format; a decrypt key names jwe or apple-ecies" if key.format.nil?
       raise EnvelopeFormatNotSupportedError, key.format unless key.format == FORMAT_JWE
+      raise ArgumentError, "plaintext must be a String" unless plaintext.is_a?(String)
 
       jwk = key.jwk
       raise ArgumentError, "key.jwk must be a Hash" unless jwk.is_a?(Hash)
@@ -57,9 +59,9 @@ module RootHerald
       field = ->(k) { jwk.key?(k) ? jwk[k] : jwk[k.to_sym] }
       kty = field.call("kty")
       if kty == "EC" && key.alg == ALG_ECDH_ES
-        encrypt_ecdh_es(field, plaintext.to_s.b, ephemeral, random)
+        encrypt_ecdh_es(field, plaintext.b, ephemeral, random)
       elsif kty == "RSA" && key.alg == ALG_RSA_OAEP_256
-        encrypt_rsa_oaep(field, plaintext.to_s.b, random)
+        encrypt_rsa_oaep(field, plaintext.b, random)
       else
         raise ArgumentError,
               "key alg #{key.alg.inspect} with kty #{kty.inspect} is not ECDH-ES on an EC key or RSA-OAEP-256 on an RSA key"
@@ -95,6 +97,7 @@ module RootHerald
       if n.num_bits < MIN_RSA_MODULUS_BITS
         raise ArgumentError, "jwk.n must be a modulus of at least #{MIN_RSA_MODULUS_BITS} bits (got #{n.num_bits})"
       end
+      raise ArgumentError, "jwk.e must be at least 3" if e < 3
 
       recipient = KeySignatures.rsa_public_key(n, e)
       cek = random.call(CEK_BYTES)

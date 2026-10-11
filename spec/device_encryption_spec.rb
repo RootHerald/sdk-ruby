@@ -207,6 +207,20 @@ RSpec.describe RootHerald::DeviceEncryption do
       expect { described_class.encrypt_to_device(rsa_fixture(1024)[:key], plaintext) }.to raise_error(ArgumentError)
     end
 
+    ["\x00", "\x01", "\x00\x02"].each do |e|
+      it "refuses an RSA exponent of #{e.unpack1("H*")}" do
+        dec = rsa_fixture[:key]
+        expect { described_class.encrypt_to_device(with(dec, jwk: dec.jwk.merge("e" => b64url(e))), plaintext) }
+          .to raise_error(ArgumentError)
+      end
+    end
+
+    it "refuses a nil plaintext" do
+      [ec_fixture[:key], rsa_fixture[:key]].each do |key|
+        expect { described_class.encrypt_to_device(key, nil) }.to raise_error(ArgumentError)
+      end
+    end
+
     it "refuses a mismatched alg and kty" do
       ec = ec_fixture[:key]
       rsa = rsa_fixture[:key]
