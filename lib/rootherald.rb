@@ -4,6 +4,7 @@ require_relative "rootherald/version"
 require_relative "rootherald/verdict"
 require_relative "rootherald/errors"
 require_relative "rootherald/key_signatures"
+require_relative "rootherald/device_encryption"
 require_relative "rootherald/client"
 
 # Root Herald server SDK.
@@ -31,5 +32,10 @@ require_relative "rootherald/client"
 #   kc = rh.issue_key_challenge(purpose: "sign", expected_devices: [device_id])
 #   key = rh.certify_key(certification, nonce: kc.nonce)
 #   RootHerald::KeySignatures.verify(key.jwk, message, signature)
+#
+#   # Mint a device-bound decrypt key, then send it what only that device can read
+#   kc = rh.issue_key_challenge(purpose: "decrypt", expected_devices: [device_id])
+#   key = rh.certify_key(certification, nonce: kc.nonce)
+#   jwe = RootHerald::DeviceEncryption.encrypt_to_device(key, session_token)
 module RootHerald
 end

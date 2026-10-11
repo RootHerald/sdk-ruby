@@ -179,6 +179,37 @@ and the signature as byte strings. ES256: a 64-byte signature is read as raw
 the modulus length (256 bytes). It returns `false` for a malformed or
 non-matching signature and raises `ArgumentError` for a JWK it cannot use.
 
+## Guarantee only a device can decrypt
+
+Mint a key with `purpose: "decrypt"`, then encrypt to it from the backend;
+only the chip that holds the key opens the result. The private half, locked
+in the chip, signs and decrypts; the public half, in the JWK, verifies and
+encrypts.
+
+```ruby
+kc = rh.issue_key_challenge(purpose: "decrypt", expected_devices: [result.device_id])
+key = rh.certify_key(certification, nonce: kc.nonce)
+store(key.device_id, key)
+
+# Later, without any Root Herald call: a session token only this device can
+# read. Send the JWE to the client; its RootHeraldDecrypt opens it.
+jwe = RootHerald::DeviceEncryption.encrypt_to_device(key, session_token)
+```
+
+`RootHerald::DeviceEncryption.encrypt_to_device(key, plaintext)` returns one
+JWE compact serialization: `ECDH-ES` with a fresh ephemeral P-256 key for an
+EC key, `RSA-OAEP-256` for an RSA key, `A256GCM` for both. Anyone holding the
+JWK can encrypt to the device.
+
+TPM keys (Windows, Linux) have `format` `"jwe"` and are what this method
+encrypts to. A macOS key has `format` `"apple-ecies"` and needs an Apple-side
+encryptor: `encrypt_to_device` raises `EnvelopeFormatNotSupportedError` for
+it. iOS mints no decrypt key. A sign key, a key without a format, a curve
+other than P-256 or an RSA modulus under 2048 bits is `ArgumentError`.
+
+A decrypt key minted in 8.1 has an empty auth value: any local process that
+can load the key's blob can open what was sent to it.
+
 ## Errors
 
 An un-enrolled / failing device is a verdict (`:fail`/`:warn`), **not** an
@@ -209,7 +240,9 @@ policy bound to the key no longer exists. Any other status, and a 422 or 402
 carrying a code no class covers (`posture_not_bound`, `plan_lapsed`), is a
 plain `HttpError` with `server_error` preserved. Input the SDK refuses
 locally, such as an empty nonce or a 7.0 enroll blob, is `ArgumentError` and
-makes no request. `ExpectedNotEnforcedError` is `verify` refusing a verdict
+makes no request; a decrypt key whose envelope `encrypt_to_device` cannot
+produce (`apple-ecies`) is `EnvelopeFormatNotSupportedError`, a subclass of
+it. `ExpectedNotEnforcedError` is `verify` refusing a verdict
 that did not echo the `expected_key` / `expected_devices` the challenge named.
 
 Every request times out after 30 s (`RootHerald::Client::DEFAULT_TIMEOUT_SECONDS`,
