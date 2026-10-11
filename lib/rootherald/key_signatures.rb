@@ -115,7 +115,9 @@ module RootHerald
     private_class_method :coordinate
 
     # Keys are built through SubjectPublicKeyInfo DER: on OpenSSL 3 a pkey is
-    # immutable once created, so its components cannot be assigned.
+    # immutable once created, so its components cannot be assigned. A point off
+    # the curve is refused when OpenSSL parses it.
+    # @api private
     def self.ec_public_key(x, y)
       group = OpenSSL::PKey::EC::Group.new(CURVE_NAME)
       point = OpenSSL::PKey::EC::Point.new(group, OpenSSL::BN.new("\x04".b + x + y, 2))
@@ -130,8 +132,7 @@ module RootHerald
     rescue OpenSSL::PKey::PKeyError, OpenSSL::PKey::EC::Point::Error => e
       raise ArgumentError, "jwk is not a usable EC public key: #{e.message}"
     end
-    private_class_method :ec_public_key
-
+    # @api private
     def self.rsa_public_key(n, e)
       rsa_key = OpenSSL::ASN1::Sequence.new([OpenSSL::ASN1::Integer.new(n), OpenSSL::ASN1::Integer.new(e)])
       spki = OpenSSL::ASN1::Sequence.new([
@@ -142,6 +143,5 @@ module RootHerald
     rescue OpenSSL::PKey::PKeyError => e
       raise ArgumentError, "jwk is not a usable RSA public key: #{e.message}"
     end
-    private_class_method :rsa_public_key
   end
 end

@@ -80,6 +80,20 @@ module RootHerald
     def code = "invalid_ask"
   end
 
+  # DeviceEncryption.encrypt_to_device was given a key whose +format+ it cannot
+  # produce: "apple-ecies", the Security.framework ECIES envelope a macOS
+  # enclave key opens, needs an Apple-side encryptor.
+  class EnvelopeFormatNotSupportedError < ArgumentError
+    # @return [String] the key's format
+    attr_reader :format
+
+    def initialize(format)
+      @format = format
+      super("key format #{format.inspect} is not produced here: encrypt_to_device writes the jwe envelope a TPM " \
+            "decrypt key opens; an apple-ecies key needs an Apple-side encryptor")
+    end
+  end
+
   # Client#verify was given expected_key / expected_devices and the verdict
   # did not echo them under +expected+: the server did not enforce the
   # binding, so the verdict says nothing about which device answered. The
